@@ -36,6 +36,31 @@ const GIT_MAX_BUFFER = 32 * 1024 * 1024;
 // 文字化けし、URI 生成や表示が壊れる。全 git 呼び出しの先頭に置く。
 const QUOTEPATH_OFF = ['-c', 'core.quotePath=false'];
 
+/**
+ * ref が argument injection に対して安全かを判定する。
+ *
+ * URL 由来 ref (GitHub blob URL の `<ref>` 等) は外部入力。先頭が `-` だと
+ * git の各サブコマンドが option として誤解釈する余地がある (`--upload-pack=`
+ * 系の悪用)。実用上の ref には先頭ハイフン・空白・シェルメタは現れないので、
+ * defense-in-depth として一律拒否する。許可される形は概ね git の refname
+ * 規約に沿う (実害想定が低いので過度に緩める必要なし)。
+ *
+ * 不正な ref を渡された ref-accepting 関数は `false` / `undefined` を返して
+ * 何もしない方針。
+ */
+export function isSafeRef(ref: string): boolean {
+    if (typeof ref !== 'string' || ref.length === 0) return false;
+    if (ref.startsWith('-')) return false;
+    // 制御文字 (ASCII 0x00-0x1F, 0x7F) は regex に書けない (biome 警告) ので
+    // charCode で判定。空白・シェルメタ・git refname 不可文字は regex で。
+    for (let i = 0; i < ref.length; i++) {
+        const c = ref.charCodeAt(i);
+        if (c < 0x20 || c === 0x7f) return false;
+    }
+    if (/[\s'"$`<>|;&\\?[\]*]/.test(ref)) return false;
+    return true;
+}
+
 export type HeadLookup =
     | { kind: 'found'; content: string; relativePath: string; gitRoot: string }
     | { kind: 'not-in-head'; relativePath: string; gitRoot: string }
@@ -116,6 +141,7 @@ export async function commitExists(
     repoCwd: string,
     ref: string,
 ): Promise<boolean> {
+    if (!isSafeRef(ref)) return false;
     try {
         await execFileAsync(
             'git',
@@ -188,6 +214,8 @@ export async function getDiffFiles(
     refA: string,
     refB?: string,
 ): Promise<CommitFileChange[]> {
+    if (!isSafeRef(refA)) return [];
+    if (refB !== undefined && !isSafeRef(refB)) return [];
     try {
         const { stdout } = await execFileAsync(
             'git',
@@ -216,6 +244,7 @@ export async function getCommitDetail(
     repo: string,
     ref: string,
 ): Promise<CommitDetail | undefined> {
+    if (!isSafeRef(ref)) return undefined;
     let header: string[];
     try {
         const { stdout } = await execFileAsync(
@@ -287,6 +316,10 @@ export async function findChildCommit(
     ref: string,
     tip?: string,
 ): Promise<string | undefined> {
+    if (!isSafeRef(ref)) return undefined;
+    // tip は内部 for-each-ref で取得した branch 名のことが多いが、明示渡しの
+    // 可能性もあるので同様にガードする (refs/heads/foo 等は安全)
+    if (tip !== undefined && !isSafeRef(tip)) return undefined;
     const childTowards = async (t: string): Promise<string | undefined> => {
         try {
             const { stdout } = await execFileAsync(
@@ -395,6 +428,7 @@ export async function readFileAtRef(
     relativePath: string,
     ref: string,
 ): Promise<string | undefined> {
+    if (!isSafeRef(ref)) return undefined;
     try {
         const { stdout } = await execFileAsync(
             'git',

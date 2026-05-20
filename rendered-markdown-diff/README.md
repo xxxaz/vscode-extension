@@ -194,3 +194,13 @@ media/
 - `#fragment` リンクは preserve するが、custom editor 側で heading anchor の id 付与をしていないため anchor scroll は機能しない
 - VSCode 標準の **Find widget は SVG 内 text を検索対象にしない** (mermaid 内文字列はヒットしない)
 - mermaid の bundle が ~3MB あり、ビルド時間 + extension サイズへ影響あり。lazy load 未対応
+
+## セキュリティ
+
+- **MD 内の raw HTML を描画する** (`markdown-it` の `html: true`)。GitHub の MD 描画と同じ挙動で、`<details>` / `<sub>` 等の有用なタグを通すための判断
+- webview は厳格 CSP: `default-src 'none'` + nonce 付き script のみ実行可。`<script>` を MD に書いても実行されない
+- 一方 `img-src` は `cspSource https: data:` と緩めなので、**MD 中の `<img src="https://...">` は普通に load される**。信頼できない MD を開く際は、画像 URL が外部トラッカーになり得る点に留意 (= GitHub の Issue で外部画像を開くのと同じリスク)
+- 拡張から **外部ネットワーク送信は一切行わない**。telemetry / 解析サーバーなし
+- 拡張から **ファイル書き込みは行わない**。read のみ
+- `git` コマンドは常に `execFile + 引数配列` で呼び出し、shell injection を遮断
+- URL 由来 ref (GitHub blob URL の `<ref>` 部分等) は `isSafeRef()` で `--` 始まり / 空白 / シェルメタを拒否してから git に渡す (argument injection 防御)

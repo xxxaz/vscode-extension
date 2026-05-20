@@ -77,12 +77,11 @@
         "package": "npm run build && vsce package --out dist/rendered-markdown-diff.vsix"
     },
     "dependencies": {
-        "diff": "^7.0.0",
+        "diff": "^9.0.0",
         "markdown-it": "^14.1.0",
         "mermaid": "^11.15.0"
     },
     "devDependencies": {
-        "@types/diff": "^7.0.0",
         "@types/markdown-it": "^14.1.2",
         "@types/node": "^20.11.0",
         "@types/vscode": "^1.85.0",
