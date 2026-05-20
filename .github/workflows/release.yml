@@ -1,0 +1,123 @@
+# 個別拡張のリリース。タグ命名で対象拡張とバージョンを判別する。
+#
+# タグ形式:
+#   rendered-markdown-diff-v<semver>   例: rendered-markdown-diff-v0.6.1
+#   git-commit-browser-v<semver>       例: git-commit-browser-v0.3.1
+#
+# このタグを push すると:
+#   1. 該当 1 拡張だけを build & package
+#   2. GitHub Release を作成し .vsix を attach
+#   3. VSCE_PAT secret があれば VS Code Marketplace に publish
+#   4. OVSX_PAT secret があれば Open VSX に publish
+#
+# 事前にやること:
+#   - Repo Settings → Secrets で VSCE_PAT (Azure DevOps PAT) と OVSX_PAT を登録
+#   - 該当拡張の package.json の version をタグの semver と一致させてコミット
+name: Release
+
+on:
+    push:
+        tags:
+            - 'rendered-markdown-diff-v*'
+            - 'git-commit-browser-v*'
+
+permissions:
+    contents: write   # GitHub Release 作成・アセット upload
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        # secrets を if: で直接参照できないので env に上げる (publish step の
+        # if: ${{ env.VSCE_PAT != '' }} で「PAT 未登録なら publish skip」を実現)
+        env:
+            VSCE_PAT: ${{ secrets.VSCE_PAT }}
+            OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        steps:
+            - uses: actions/checkout@v4
+
+            # タグ `<ext>-v<semver>` から ext / version を抽出
+            - name: parse tag
+              id: parse
+              run: |
+                  TAG="${GITHUB_REF#refs/tags/}"
+                  case "$TAG" in
+                      rendered-markdown-diff-v*)
+                          EXT="rendered-markdown-diff"
+                          VERSION="${TAG#rendered-markdown-diff-v}"
+                          ;;
+                      git-commit-browser-v*)
+                          EXT="git-commit-browser"
+                          VERSION="${TAG#git-commit-browser-v}"
+                          ;;
+                      *)
+                          echo "::error::unknown tag format: $TAG"
+                          exit 1
+                          ;;
+                  esac
+                  echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+                  echo "ext=$EXT"           >> "$GITHUB_OUTPUT"
+                  echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+
+            # package.json の version とタグの version が乖離していたら fail
+            # (Marketplace に上げた後の食い違いを避ける)
+            - name: verify package.json version matches tag
+              run: |
+                  PKG_VER=$(node -p "require('./${{ steps.parse.outputs.ext }}/package.json').version")
+                  if [ "$PKG_VER" != "${{ steps.parse.outputs.version }}" ]; then
+                      echo "::error::package.json version ($PKG_VER) != tag version (${{ steps.parse.outputs.version }})"
+                      exit 1
+                  fi
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: npm
+                  cache-dependency-path: ${{ steps.parse.outputs.ext }}/package-lock.json
+
+            - name: npm ci
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: npm ci --no-audit --no-fund
+
+            - name: ensure LICENSE present
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: |
+                  if [ ! -f LICENSE ]; then
+                      cp ../LICENSE LICENSE
+                  fi
+
+            - name: tsc --noEmit
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: ./node_modules/.bin/tsc --noEmit
+
+            - name: build & package (.vsix)
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: npm run package
+
+            - name: rename .vsix with version suffix
+              id: vsix
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: |
+                  SRC=dist/${{ steps.parse.outputs.ext }}.vsix
+                  DST=dist/${{ steps.parse.outputs.ext }}-${{ steps.parse.outputs.version }}.vsix
+                  mv "$SRC" "$DST"
+                  echo "path=${{ steps.parse.outputs.ext }}/$DST" >> "$GITHUB_OUTPUT"
+
+            - name: create GitHub Release & attach .vsix
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ steps.parse.outputs.tag }}
+                  name: ${{ steps.parse.outputs.ext }} v${{ steps.parse.outputs.version }}
+                  files: ${{ steps.vsix.outputs.path }}
+                  generate_release_notes: true
+
+            # Marketplace publish (VSCE_PAT があるときだけ)
+            - name: publish to VS Code Marketplace
+              if: ${{ env.VSCE_PAT != '' }}
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: npx --no-install @vscode/vsce publish --packagePath dist/${{ steps.parse.outputs.ext }}-${{ steps.parse.outputs.version }}.vsix
+
+            # Open VSX publish (OVSX_PAT があるときだけ)
+            - name: publish to Open VSX
+              if: ${{ env.OVSX_PAT != '' }}
+              working-directory: ${{ steps.parse.outputs.ext }}
+              run: npx -y ovsx publish dist/${{ steps.parse.outputs.ext }}-${{ steps.parse.outputs.version }}.vsix -p "$OVSX_PAT"

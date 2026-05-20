@@ -1,0 +1,67 @@
+# 各拡張を tsc + esbuild + vsce package まで通し、生成された .vsix を
+# workflow artifact として保持する。push (main) / PR / 手動起動で走る。
+#
+# 戦略:
+#   - matrix で拡張ごとに並列実行 (rendered-markdown-diff / git-commit-browser)
+#   - 各 job は独立した working-directory で npm ci → tsc --noEmit → package
+#   - 成果物は actions/upload-artifact@v4 で保持 (retention 14 日)
+# 注意:
+#   - cache は package-lock.json のハッシュごと。各拡張で別キャッシュ
+#   - shared/ は esbuild 相対 import で bundle されるので別 install 不要
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: build ${{ matrix.ext }}
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                ext:
+                    - rendered-markdown-diff
+                    - git-commit-browser
+        defaults:
+            run:
+                working-directory: ${{ matrix.ext }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: npm
+                  cache-dependency-path: ${{ matrix.ext }}/package-lock.json
+
+            - name: npm ci
+              run: npm ci --no-audit --no-fund
+
+            # vsce package が LICENSE / icon を要求するので root LICENSE を
+            # 各拡張 dir に複製してから package する (source repo にも commit
+            # 済みなので冪等)
+            - name: ensure LICENSE present
+              run: |
+                  if [ ! -f LICENSE ]; then
+                      cp ../LICENSE LICENSE
+                  fi
+
+            - name: tsc --noEmit
+              run: ./node_modules/.bin/tsc --noEmit
+
+            - name: build & package (.vsix)
+              run: npm run package
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.ext }}-vsix
+                  path: ${{ matrix.ext }}/dist/*.vsix
+                  if-no-files-found: error
+                  retention-days: 14

@@ -5,7 +5,16 @@
     "version": "0.3.0",
     "publisher": "xxxaz",
     "license": "MIT",
-    "private": true,
+    "icon": "icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/xxxaz/vscode-extension.git",
+        "directory": "git-commit-browser"
+    },
+    "homepage": "https://github.com/xxxaz/vscode-extension/tree/main/git-commit-browser",
+    "bugs": {
+        "url": "https://github.com/xxxaz/vscode-extension/issues"
+    },
     "engines": {
         "vscode": "^1.85.0"
     },
@@ -47,7 +56,7 @@
     "scripts": {
         "build": "node esbuild.config.mjs",
         "watch": "node esbuild.config.mjs --watch",
-        "package": "npm run build && vsce package --out dist/git-commit-browser.vsix --allow-missing-repository --skip-license --baseContentUrl https://github.com/xxxaz/vscode-extension/blob/main/git-commit-browser"
+        "package": "npm run build && vsce package --out dist/git-commit-browser.vsix"
     },
     "devDependencies": {
         "@types/node": "^20.11.0",
