@@ -1,0 +1,517 @@
+:root {
+    color-scheme: light dark;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+    margin: 0;
+    padding: 0;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mdd-header {
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-sideBar-background);
+    flex: 0 0 auto;
+}
+
+.mdd-title {
+    font-size: 1.1em;
+    margin: 0 0 4px;
+    color: var(--vscode-foreground);
+}
+
+.mdd-subtitle {
+    margin: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.9em;
+    word-break: break-all;
+}
+
+.mdd-subtitle-link {
+    cursor: pointer;
+    color: var(--vscode-textLink-foreground);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.mdd-subtitle-link:hover,
+.mdd-subtitle-link:focus {
+    color: var(
+        --vscode-textLink-activeForeground,
+        var(--vscode-textLink-foreground)
+    );
+    outline: none;
+}
+
+.mdd-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.mdd-action-btn {
+    padding: 3px 10px;
+    font-size: 0.85em;
+    font-family: inherit;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    background: var(
+        --vscode-button-secondaryBackground,
+        var(--vscode-editorWidget-background)
+    );
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.mdd-action-btn:hover {
+    background: var(
+        --vscode-button-secondaryHoverBackground,
+        var(--vscode-list-hoverBackground)
+    );
+}
+
+.mdd-action-btn:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+
+.mdd-action-btn:disabled,
+.mdd-action-btn[aria-disabled='true'] {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.mdd-summary {
+    margin: 6px 0 0;
+    font-size: 0.85em;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.mdd-summary-added {
+    color: var(--vscode-gitDecoration-addedResourceForeground, #4caf50);
+    margin-right: 12px;
+}
+
+.mdd-summary-removed {
+    color: var(--vscode-gitDecoration-deletedResourceForeground, #f44336);
+}
+
+.mdd-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    flex: 1 1 0;
+    min-height: 0;
+}
+
+.mdd-single {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+    position: relative;
+}
+
+.mdd-single .mdd-content {
+    padding: 16px 24px;
+    max-width: 920px;
+    margin: 0 auto;
+    overflow: visible;
+}
+
+/* スクロールバー右側に diff 位置を示す rail (自前ミニマップ) */
+.mdd-rail {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.mdd-rail-add {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: var(
+        --vscode-editorGutter-addedBackground,
+        var(--vscode-gitDecoration-addedResourceForeground, #587c0c)
+    );
+    opacity: 0.7;
+}
+
+.mdd-rail-mod {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: var(
+        --vscode-editorGutter-modifiedBackground,
+        var(--vscode-gitDecoration-modifiedResourceForeground, #0c7d9d)
+    );
+    opacity: 0.7;
+}
+
+.mdd-rail-del {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: var(
+        --vscode-editorGutter-deletedBackground,
+        var(--vscode-gitDecoration-deletedResourceForeground, #94151b)
+    );
+    opacity: 0.7;
+}
+
+.mdd-pane {
+    border-right: 1px solid var(--vscode-panel-border);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.mdd-pane:last-child {
+    border-right: none;
+}
+
+.mdd-pane-title {
+    margin: 0;
+    padding: 6px 16px;
+    font-size: 0.85em;
+    font-weight: 600;
+    background: var(--vscode-editorWidget-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    color: var(--vscode-descriptionForeground);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.mdd-content {
+    flex: 1;
+    overflow: auto;
+    padding: 16px 24px;
+    min-width: 0;
+}
+
+.mdd-content > * {
+    max-width: 100%;
+}
+
+/* Markdown styling */
+.mdd-content h1,
+.mdd-content h2,
+.mdd-content h3,
+.mdd-content h4,
+.mdd-content h5,
+.mdd-content h6 {
+    color: var(--vscode-foreground);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    padding-bottom: 0.2em;
+    margin-top: 1.4em;
+}
+
+.mdd-content h1 {
+    font-size: 1.6em;
+}
+
+.mdd-content h2 {
+    font-size: 1.3em;
+}
+
+.mdd-content h3 {
+    font-size: 1.1em;
+}
+
+.mdd-content h4,
+.mdd-content h5,
+.mdd-content h6 {
+    font-size: 1em;
+    border-bottom: none;
+}
+
+.mdd-content a {
+    color: var(--vscode-textLink-foreground);
+}
+
+/* 検証済み bare SHA の autolink (クリックで Git Commit Browser) */
+.mdd-content a.mdd-commit-ref {
+    font-family: var(--vscode-editor-font-family, monospace);
+    text-decoration: none;
+    border-bottom: 1px dotted currentColor;
+}
+
+.mdd-content code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(
+        --vscode-textCodeBlock-background,
+        rgba(127, 127, 127, 0.12)
+    );
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+.mdd-content pre {
+    background: var(
+        --vscode-textCodeBlock-background,
+        rgba(127, 127, 127, 0.12)
+    );
+    border: 1px solid var(--vscode-panel-border);
+    padding: 12px;
+    overflow-x: auto;
+    border-radius: 4px;
+}
+
+.mdd-content pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+}
+
+.mdd-content blockquote {
+    border-left: 4px solid var(--vscode-panel-border);
+    padding-left: 12px;
+    color: var(--vscode-descriptionForeground);
+    margin-left: 0;
+}
+
+.mdd-content table {
+    border-collapse: collapse;
+    margin: 1em 0;
+}
+
+.mdd-content th,
+.mdd-content td {
+    border: 1px solid var(--vscode-panel-border);
+    padding: 6px 10px;
+}
+
+.mdd-content th {
+    background: var(--vscode-editorWidget-background);
+}
+
+.mdd-content ul,
+.mdd-content ol {
+    padding-left: 1.6em;
+}
+
+/* Diff highlights */
+.mdd-ins {
+    background: rgba(76, 175, 80, 0.18);
+    border-left: 3px solid
+        var(--vscode-gitDecoration-addedResourceForeground, #4caf50);
+    padding-left: 6px;
+    margin-left: -9px;
+}
+
+.mdd-del {
+    background: rgba(244, 67, 54, 0.18);
+    border-left: 3px solid
+        var(--vscode-gitDecoration-deletedResourceForeground, #f44336);
+    padding-left: 6px;
+    margin-left: -9px;
+    text-decoration: line-through;
+    text-decoration-color: rgba(244, 67, 54, 0.6);
+}
+
+/* inline 要素に当たった場合は border / margin の調整を抑える */
+.mdd-content code.mdd-ins,
+.mdd-content code.mdd-del,
+.mdd-content span.mdd-ins,
+.mdd-content span.mdd-del,
+.mdd-content a.mdd-ins,
+.mdd-content a.mdd-del {
+    border-left: none;
+    padding-left: 0;
+    margin-left: 0;
+}
+
+.mdd-content pre.mdd-ins,
+.mdd-content pre.mdd-del {
+    padding-left: 6px;
+}
+
+.mdd-content .mdd-empty {
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+}
+
+/* 単独 viewer の gutter スタイル (mdd-single-gutter body 配下のみ) */
+/* 追加ブロックの左に緑の細い帯、削除位置に赤い三角マーカー */
+.mdd-single-gutter .mdd-content {
+    /* gutter マーカー描画の余白を確保 */
+    padding-left: 32px;
+}
+
+.mdd-single-gutter .mdd-ins-gutter,
+.mdd-single-gutter .mdd-mod-gutter {
+    position: relative;
+}
+
+.mdd-single-gutter .mdd-ins-gutter::before,
+.mdd-single-gutter .mdd-mod-gutter::before {
+    content: '';
+    position: absolute;
+    left: -14px;
+    top: 0.1em;
+    bottom: 0.1em;
+    width: 3px;
+    border-radius: 2px;
+}
+
+.mdd-single-gutter .mdd-ins-gutter::before {
+    background: var(
+        --vscode-editorGutter-addedBackground,
+        var(--vscode-gitDecoration-addedResourceForeground, #587c0c)
+    );
+}
+
+.mdd-single-gutter .mdd-mod-gutter::before {
+    background: var(
+        --vscode-editorGutter-modifiedBackground,
+        var(--vscode-gitDecoration-modifiedResourceForeground, #0c7d9d)
+    );
+}
+
+.mdd-single-gutter .mdd-del-marker {
+    position: relative;
+    height: 0;
+    margin: 4px 0;
+}
+
+.mdd-single-gutter .mdd-del-marker::before {
+    content: '';
+    position: absolute;
+    left: -16px;
+    top: -5px;
+    width: 0;
+    height: 0;
+    border-left: 7px solid
+        var(
+            --vscode-editorGutter-deletedBackground,
+            var(--vscode-gitDecoration-deletedResourceForeground, #94151b)
+        );
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+}
+
+/* mermaid 拡大表示 overlay (click した mermaid SVG をモーダルで拡大) */
+.mdd-mermaid-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+    overflow: auto;
+    padding: 32px;
+    box-sizing: border-box;
+}
+
+.mdd-mermaid-overlay-content {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    padding: 24px;
+    cursor: grab;
+    overflow: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    flex: 0 0 auto;
+    max-width: 90vw;
+    max-height: 90vh;
+    /* drag pan を素直に通すためテキスト選択は抑止。
+       Ctrl / Cmd 押下中は `.mdd-mermaid-select-mode` で上書きしてテキスト選択を許可 */
+    user-select: none;
+}
+
+.mdd-mermaid-overlay-content.mdd-mermaid-panning {
+    cursor: grabbing;
+}
+
+.mdd-mermaid-overlay-content.mdd-mermaid-select-mode {
+    cursor: text;
+    user-select: text;
+}
+
+/* dialog 内の .mermaid は gutter 帯や原ノードの装飾を全部リセット。
+   width は JS 側 (webviewMermaid.ts) で inline style として注入される。 */
+.mdd-mermaid-overlay-content .mdd-mermaid-zoomed {
+    cursor: default;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+}
+
+.mdd-mermaid-overlay-content .mdd-mermaid-zoomed::before {
+    content: none;
+}
+
+.mdd-mermaid-overlay-content .mdd-mermaid-zoomed svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+/* dialog ヘッダー (zoom out / label / zoom in / fit / close) */
+.mdd-mermaid-overlay-header {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 1;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 18px;
+    padding: 2px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.mdd-mermaid-overlay-btn {
+    min-width: 28px;
+    height: 28px;
+    padding: 0 8px;
+    font-size: 13px;
+    line-height: 1;
+    border: none;
+    background: transparent;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    font-family: inherit;
+    border-radius: 14px;
+}
+
+.mdd-mermaid-overlay-btn:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.mdd-mermaid-overlay-close-btn {
+    font-size: 18px;
+}
+
+.mdd-mermaid-overlay-zoom-label {
+    min-width: 48px;
+    text-align: center;
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+    /* cspell:disable-next-line */
+    font-variant-numeric: tabular-nums;
+}

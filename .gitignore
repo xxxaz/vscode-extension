@@ -1,0 +1,12 @@
+node_modules/
+out/
+dist/
+tmp/
+
+# esbuild がブラウザ側 bundle として生成する成果物 (vsix package 時に再生成される)
+**/media/webview.js
+**/media/webview.js.map
+
+# editor / OS noise
+.DS_Store
+*.log

@@ -1,0 +1,84 @@
+{
+    "name": "rendered-markdown-diff",
+    "displayName": "Rendered Markdown Diff",
+    "description": "Render *.md as default editor with git-aware diff highlights (gutter hints when standalone, inline ハイライト when in a diff editor)",
+    "version": "0.6.0",
+    "publisher": "xxxaz",
+    "license": "MIT",
+    "private": true,
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Other",
+        "Visualization"
+    ],
+    "main": "./dist/extension.js",
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "contributes": {
+        "customEditors": [
+            {
+                "viewType": "xxxaz.rendered-markdown-diff",
+                "displayName": "Rendered Markdown Diff",
+                "selector": [
+                    {
+                        "filenamePattern": "*.md"
+                    }
+                ],
+                "priority": "default"
+            }
+        ],
+        "commands": [
+            {
+                "command": "xxxaz.rendered-markdown-diff.reopenAsViewer",
+                "title": "Reopen as Rendered Markdown Diff viewer",
+                "category": "Rendered Markdown Diff",
+                "icon": "$(preview)"
+            },
+            {
+                "command": "xxxaz.rendered-markdown-diff.reopenAsText",
+                "title": "Reopen as Text Editor",
+                "category": "Rendered Markdown Diff",
+                "icon": "$(go-to-file)"
+            }
+        ],
+        "menus": {
+            "editor/title": [
+                {
+                    "command": "xxxaz.rendered-markdown-diff.reopenAsViewer",
+                    "when": "editorLangId == markdown && activeEditor != 'xxxaz.rendered-markdown-diff'",
+                    "group": "navigation"
+                },
+                {
+                    "command": "xxxaz.rendered-markdown-diff.reopenAsText",
+                    "when": "activeEditor == 'xxxaz.rendered-markdown-diff'",
+                    "group": "navigation"
+                }
+            ]
+        }
+    },
+    "extensionDependencies": [
+        "vscode.git"
+    ],
+    "scripts": {
+        "build": "node esbuild.config.mjs",
+        "watch": "node esbuild.config.mjs --watch",
+        "package": "npm run build && vsce package --out dist/rendered-markdown-diff.vsix --allow-missing-repository --skip-license --baseContentUrl https://github.com/xxxaz/vscode-extension/blob/main/rendered-markdown-diff"
+    },
+    "dependencies": {
+        "diff": "^7.0.0",
+        "markdown-it": "^14.1.0",
+        "mermaid": "^11.15.0"
+    },
+    "devDependencies": {
+        "@types/diff": "^7.0.0",
+        "@types/markdown-it": "^14.1.2",
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.85.0",
+        "@vscode/vsce": "^3.0.0",
+        "esbuild": "^0.24.0",
+        "typescript": "^5.4.0"
+    }
+}

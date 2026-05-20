@@ -1,0 +1,59 @@
+{
+    "name": "git-commit-browser",
+    "displayName": "Git Commit Browser",
+    "description": "Make commit references (bare SHA / GitHub・GitLab commit & blob URLs) clickable in ANY editor and browse the commit (changed files, prev/next)",
+    "version": "0.3.0",
+    "publisher": "xxxaz",
+    "license": "MIT",
+    "private": true,
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Other",
+        "SCM Providers"
+    ],
+    "main": "./dist/extension.js",
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "contributes": {
+        "commands": [
+            {
+                "command": "xxxaz.git-commit-browser.open",
+                "title": "Open commit browser",
+                "category": "Git Commit Browser"
+            },
+            {
+                "command": "xxxaz.git-commit-browser.compareActiveDiff",
+                "title": "この比較を ref 間比較ブラウザで開く",
+                "category": "Git Commit Browser",
+                "icon": "$(git-compare)"
+            }
+        ],
+        "menus": {
+            "editor/title": [
+                {
+                    "command": "xxxaz.git-commit-browser.compareActiveDiff",
+                    "when": "isInDiffEditor || activeCustomEditorId == 'xxxaz.rendered-markdown-diff'",
+                    "group": "navigation@9"
+                }
+            ]
+        }
+    },
+    "extensionDependencies": [
+        "vscode.git"
+    ],
+    "scripts": {
+        "build": "node esbuild.config.mjs",
+        "watch": "node esbuild.config.mjs --watch",
+        "package": "npm run build && vsce package --out dist/git-commit-browser.vsix --allow-missing-repository --skip-license --baseContentUrl https://github.com/xxxaz/vscode-extension/blob/main/git-commit-browser"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.85.0",
+        "@vscode/vsce": "^3.0.0",
+        "esbuild": "^0.24.0",
+        "typescript": "^5.4.0"
+    }
+}
