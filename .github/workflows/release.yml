@@ -33,7 +33,7 @@ jobs:
             VSCE_PAT: ${{ secrets.VSCE_PAT }}
             OVSX_PAT: ${{ secrets.OVSX_PAT }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
 
             # タグ `<ext>-v<semver>` から ext / version を抽出
             - name: parse tag
@@ -68,7 +68,7 @@ jobs:
                       exit 1
                   fi
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: '26'
                   cache: npm
@@ -103,7 +103,7 @@ jobs:
                   echo "path=${{ steps.parse.outputs.ext }}/$DST" >> "$GITHUB_OUTPUT"
 
             - name: create GitHub Release & attach .vsix
-              uses: softprops/action-gh-release@v2
+              uses: softprops/action-gh-release@v3
               with:
                   tag_name: ${{ steps.parse.outputs.tag }}
                   name: ${{ steps.parse.outputs.ext }} v${{ steps.parse.outputs.version }}
