@@ -94,6 +94,7 @@ OSS 競合サーベイ結果として、「**`customEditors.priority="default"` 
 - 比較モード: `diffPair` の両側のうち `file:` scheme のものを watch (working tree 側)
 - VSCode editor save (in-place 書き込み) と、Claude Code 等の外部ライターによる **atomic rename** (temp file → rename) の両方に対応するため、`onDidChange` / `onDidCreate` / `onDidDelete` 全部 listen して 100ms debounce で coalesce
 - 再レンダリング時に action handler を一度 dispose して再登録するので listener 累積なし。scroll sync 登録は初回のみ
+- watcher の通知が届かない構成への保険として、表示している間は **2 秒おきにファイルの更新時刻と大きさを確かめ**、変わっていれば描き直す (0.6.1〜)。別のコンテナ (AI エージェント用など) が bind mount 越しに書いたファイルは、VSCode を動かしているコンテナの watcher に変更が届かないことがあり、開き直すまで古い内容のままになっていた。watcher 経由で描き直した分は二重に描かない
 - 検知の都合上、再描画のたびに **スクロール位置はリセット** される (preserve は今後の課題)
 
 ## Mermaid サポート
