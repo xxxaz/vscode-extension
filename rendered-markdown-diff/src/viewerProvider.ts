@@ -237,14 +237,20 @@ export class RenderedMarkdownDiffProvider
         // するケースだけ反応して、外部ライターには反応しない事象になる。
         //
         // 重複発火を避けるため 100ms debounce を入れる。
+        const watchUris = collectWatchFileUris(uri, diffPair);
+        // 最後に描いたときのファイルの状態 (更新時刻と大きさ)。下の定期確認が、watcher 経由で描き直した分を
+        // もう一度描かないように、描き直すたびに取り直す
+        let lastStamp = await fileStamp(watchUris);
         const rerender = debounce(() => {
-            renderOnce().catch((err) => {
+            (async () => {
+                lastStamp = await fileStamp(watchUris);
+                await renderOnce();
+            })().catch((err) => {
                 this.output.appendLine(
                     `[re-render] error: ${err instanceof Error ? err.message : String(err)}`,
                 );
             });
         }, 100);
-        const watchUris = collectWatchFileUris(uri, diffPair);
         const watchers: vscode.FileSystemWatcher[] = watchUris.map(
             (fileUri) => {
                 const watcher = vscode.workspace.createFileSystemWatcher(
@@ -263,9 +269,31 @@ export class RenderedMarkdownDiffProvider
             },
         );
 
+        // FileSystemWatcher の通知が届かない構成への保険として、表示している間だけ定期的にファイルの更新時刻と
+        // 大きさを見て、変わっていれば描き直す。別のコンテナ (AI エージェント用など) が bind mount 越しに書いた
+        // ファイルは、VSCode を動かしているコンテナの watcher に変更が届かないことがあり、そのときは
+        // 開き直すまで古い内容のままになっていた
+        let polling = false;
+        const poller =
+            watchUris.length > 0
+                ? setInterval(() => {
+                      if (!webviewPanel.visible || polling) return;
+                      polling = true;
+                      fileStamp(watchUris)
+                          .then((stamp) => {
+                              if (stamp !== lastStamp) rerender();
+                          })
+                          .catch(() => {})
+                          .finally(() => {
+                              polling = false;
+                          });
+                  }, POLL_INTERVAL_MS)
+                : undefined;
+
         webviewPanel.onDidDispose(() => {
             actionSub?.dispose();
             for (const w of watchers) w.dispose();
+            if (poller) clearInterval(poller);
         });
     }
 
@@ -421,6 +449,27 @@ export class RenderedMarkdownDiffProvider
  * 連続イベントを最後の発火から `wait` ms 後に 1 回だけ実行する単純 debounce。
  * file watcher で atomic rename (delete+create) や 2 連発の write を 1 回にまとめる用途。
  */
+/** 表示中のファイルを確かめる間隔 (FileSystemWatcher の通知が届かないときの保険) */
+const POLL_INTERVAL_MS = 2000;
+
+/**
+ * ファイルの更新時刻と大きさをつないだ文字列 (変化の検知用)。読めないファイルは `missing` として扱う
+ * (削除・置き換えの途中でも、置き換わった後の状態で次に描き直す)
+ */
+async function fileStamp(uris: vscode.Uri[]): Promise<string> {
+    const parts = await Promise.all(
+        uris.map(async (u) => {
+            try {
+                const st = await vscode.workspace.fs.stat(u);
+                return `${st.mtime}:${st.size}`;
+            } catch {
+                return 'missing';
+            }
+        }),
+    );
+    return parts.join('|');
+}
+
 function debounce<TArgs extends unknown[]>(
     fn: (...args: TArgs) => void,
     wait: number,
