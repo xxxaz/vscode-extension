@@ -1,5 +1,6 @@
 import { diffLines } from 'diff';
 import MarkdownIt from 'markdown-it';
+import { checkboxPlugin, type CheckboxEnv } from './checkboxes.js';
 
 const md = new MarkdownIt({
     html: true,
@@ -7,6 +8,8 @@ const md = new MarkdownIt({
     breaks: false,
     typographer: false,
 });
+
+md.use(checkboxPlugin);
 
 // ```` ```mermaid ```` フェンスを `<div class="mermaid">…</div>` に変換する。
 // webview 側スクリプト (`webviewMermaid.ts`) がこれを拾って SVG レンダリングする。
@@ -28,7 +31,7 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 };
 
 /** render 系に渡す追加コンテキスト。`commitShas` は検証済み bare SHA 集合。 */
-export type RenderEnv = { commitShas?: Set<string> };
+export type RenderEnv = CheckboxEnv & { commitShas?: Set<string> };
 
 // bare SHA (7〜40 hex) の autolink。GitHub と同様、呼び出し側 (viewerProvider) が
 // `git rev-parse` で実在検証した SHA 集合のみを `env.commitShas` で渡してくる。
@@ -137,7 +140,7 @@ export function renderPairedDiff(
             headSource,
             removedLines,
             'mdd-del',
-            renderEnv,
+            { commitShas: renderEnv?.commitShas },
         ),
         currentHtml: renderWithHighlight(
             currentSource,

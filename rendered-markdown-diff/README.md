@@ -33,6 +33,20 @@ OSS 競合サーベイ結果として、「**`customEditors.priority="default"` 
 
 `package.json` の `customEditors.priority="default"` で `*.md` のデフォルト editor として登録される。`workbench.editorAssociations` で `*.md` を明示的に別 viewType に上書きしない限り常にこちらが採用され、拡張を無効化すると通常の text editor / preview にフォールバックする。
 
+## チェックボックス (0.7.0、2026-10-15)
+
+表内・リスト・本文の `[ ]` / `[x]` / `[X]` をクリック、または Tab で選択して Space で切り替えると、元ファイルを保存する。マーカーの前後には空白または行端が必要。
+
+- 作業ツリーの `file:` 表示だけが操作可能。差分の original 側とコミット履歴は読み取り専用。
+- コードブロック、コード span、エスケープしたマーカー、リンク、画像は対象外。raw HTML を含む inline ブロックと、元の位置を一意に対応付けられない構文は文字のまま表示する。
+- 未保存の編集がある場合は操作を拒否する。テキストエディタで保存または取り消してから操作する。
+- 表示後にファイルが変わった場合は変更せず描き直す。操作中に外部更新を検知した場合や保存に失敗した場合はエラーを表示する。適用済みの変更は未保存のままテキストエディタで確認できる。
+- Undo は「✎ Edit」でテキストエディタを開いて実行する。元ファイルに反映するには Undo 後に保存する。viewer 自体は CustomReadonlyEditorProvider のため通常のテキスト編集用 Undo を直接扱わない。
+- 保存時には VS Code の保存参加処理 (保存時フォーマット等) が適用される。検証後の外部書き込みと保存の競合は VS Code 標準の保存競合検出にも従う。
+- 保存後の再描画では、既存の自動更新と同様にスクロール位置が先頭へ戻る。
+
+検査は `npm test` と `npm run typecheck`。既存の CI が使う `npm run package` からも prebuild 経由で実行される。
+
 ## 操作リファレンス
 
 ### viewer ヘッダーのアクション
@@ -170,6 +184,8 @@ sequenceDiagram
 src/
 ├── extension.ts          エントリポイント。viewer provider 登録 + tab 監視 + reopen コマンド + initGitApi
 ├── viewerProvider.ts     CustomReadonlyEditorProvider。pair coordination / scroll sync / action handler / file watcher / commit 参照のコマンド橋渡し
+├── checkboxes.ts         Markdown のチェック記法と元の位置の対応付け
+├── checkboxEditing.ts    WorkspaceEdit と保存、競合拒否
 ├── diff.ts               diff 計算 + markdown-it レンダリング + mermaid fence override + 検証済み bare-SHA autolink core rule
 ├── webview.ts            webview HTML 構築 (CSP, scroll 同期, rail, action ボタン, リンク/コミット参照クリック)
 └── webviewMermaid.ts     ブラウザ側 entry (mermaid 描画 + 拡大 dialog)。esbuild で media/webview.js に bundle
@@ -202,6 +218,6 @@ media/
 - webview は厳格 CSP: `default-src 'none'` + nonce 付き script のみ実行可。`<script>` を MD に書いても実行されない
 - 一方 `img-src` は `cspSource https: data:` と緩めなので、**MD 中の `<img src="https://...">` は普通に load される**。信頼できない MD を開く際は、画像 URL が外部トラッカーになり得る点に留意 (= GitHub の Issue で外部画像を開くのと同じリスク)
 - 拡張から **外部ネットワーク送信は一切行わない**。telemetry / 解析サーバーなし
-- 拡張から **ファイル書き込みは行わない**。read のみ
+- チェック操作では、表示内容と元ファイルが一致した場合だけ、対応する一文字を WorkspaceEdit で更新して保存する。webview からファイルパスや任意テキストは受け取らない (2026-10-15)
 - `git` コマンドは常に `execFile + 引数配列` で呼び出し、shell injection を遮断
 - URL 由来 ref (GitHub blob URL の `<ref>` 部分等) は `isSafeRef()` で `--` 始まり / 空白 / シェルメタを拒否してから git に渡す (argument injection 防御)

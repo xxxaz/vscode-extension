@@ -1,3 +1,5 @@
+import type { CheckboxSnapshot } from './checkboxes.js';
+import { saveCheckbox } from './checkboxEditing.js';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ContentRef } from '../../shared/src/contentRef.js';
@@ -217,6 +219,7 @@ export class RenderedMarkdownDiffProvider
                 },
                 replaceActions,
                 ensureScrollSync,
+                renderOnce,
             );
         };
 
@@ -313,9 +316,16 @@ export class RenderedMarkdownDiffProvider
         },
         replaceActions: (opts: ActionHandlerOpts | undefined) => void,
         ensureScrollSync: () => void,
+        refresh: () => Promise<void>,
     ): Promise<void> {
         const { styleUri, webviewScriptUri, cspSource } = urls;
         const isDiff = !!diffPair;
+        const canEdit = uri.scheme === 'file' && (!diffPair || uri.toString() === diffPair.modifiedUri.toString());
+        let checkboxes: CheckboxSnapshot | undefined;
+        const makeCheckboxes = (source: string | undefined): CheckboxSnapshot | undefined => {
+            if (!canEdit || source === undefined) return undefined;
+            return { id: generateNonce(), source, offsets: new Map() };
+        };
 
         // --- (1) 描画ロジック (モード別に bodyHtml / subtitle / bodyClass を決める) ---
         let bodyHtml: string;
@@ -337,8 +347,9 @@ export class RenderedMarkdownDiffProvider
                 origText ?? '',
                 modText ?? '',
             ]);
+            checkboxes = makeCheckboxes(modText);
             const render = renderPairedDiff(origText ?? '', modText ?? '', {
-                commitShas,
+                commitShas, checkboxes,
             });
             // Git Graph の「追加/削除されたファイル」の diff では片側 URI が
             // exists:false な git-graph で content が undefined になる。空 render だと
@@ -380,7 +391,8 @@ export class RenderedMarkdownDiffProvider
             }
 
             const commitShas = await collectConfirmedShas(uri, [content]);
-            const renderEnv = { commitShas };
+            checkboxes = makeCheckboxes(content);
+            const renderEnv = { commitShas, checkboxes };
             if (uri.scheme === 'file') {
                 const head = await readFileAtHead(uri);
                 if (head.kind === 'found' && head.content !== content) {
@@ -429,6 +441,8 @@ export class RenderedMarkdownDiffProvider
         }
         replaceActions({
             currentUri: uri,
+            checkboxes,
+            refresh,
             // subtitle クリックで単独 viewer を開けるのは diff モード時のみ
             openSingleUri: isDiff ? uri : undefined,
             ...handler,
@@ -685,6 +699,8 @@ async function computeActions(
  *     代わりに `showTextDocument` で対象 file: を **新規 text editor として** 開く。
  */
 type ActionHandlerOpts = {
+    checkboxes?: CheckboxSnapshot;
+    refresh: () => Promise<void>;
     /** 自分自身が表示している URI (markdown 内 relative link 解決の基準) */
     currentUri: vscode.Uri;
     /** subtitle クリック (openSingle) の対象。diff pane の自分側 URI */
@@ -724,6 +740,15 @@ function setupActionHandlers(
 
         try {
             switch (msg.type) {
+                case 'toggleCheckbox':
+                    try {
+                        await saveCheckbox(opts.currentUri, opts.checkboxes, msg.key, msg.checked);
+                    } catch (error) {
+                        vscode.window.showErrorMessage('Rendered Markdown Diff: ' + (error instanceof Error ? error.message : String(error)));
+                    } finally {
+                        await opts.refresh();
+                    }
+                    return;
                 case 'openText':
                     if (opts.openTextUri)
                         await openInTextEditor(

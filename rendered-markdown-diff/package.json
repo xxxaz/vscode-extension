@@ -2,7 +2,7 @@
     "name": "rendered-markdown-diff",
     "displayName": "Rendered Markdown Diff",
     "description": "Render *.md as default editor with git-aware diff highlights (gutter hints when standalone, inline ハイライト when in a diff editor)",
-    "version": "0.6.1",
+    "version": "0.7.0",
     "publisher": "xxxaz",
     "license": "MIT",
     "icon": "icon.png",
@@ -74,7 +74,10 @@
     "scripts": {
         "build": "node esbuild.config.mjs",
         "watch": "node esbuild.config.mjs --watch",
-        "package": "npm run build && vsce package --out dist/rendered-markdown-diff.vsix"
+        "package": "npm run build && vsce package --out dist/rendered-markdown-diff.vsix",
+        "test": "node test/run.ts",
+        "typecheck": "tsc --noEmit",
+        "prebuild": "npm run typecheck && npm test"
     },
     "dependencies": {
         "diff": "^9.0.0",

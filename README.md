@@ -139,12 +139,12 @@ git コマンド呼び出しで `` git show `HEAD:${path}` `` のようなテン
 両拡張に共通する設計と既知の留意点:
 
 - **外部ネットワーク送信なし** — telemetry / 解析サーバー / クラッシュレポート等を一切持たない。`fetch` / `http` / `https` ライブラリ呼び出し 0 件
-- **ファイル書き込みなし** — 拡張からは read のみ。書き込みは VS Code 標準のテキストエディタ経由 (拡張側 API 使用なし)
+- **チェック操作で元ファイルを保存** — Rendered Markdown Diff は作業ツリーのチェック記法だけを VS Code の WorkspaceEdit で編集する。未保存編集や外部更新を検知した場合は保存しない。Git Commit Browser は読み取りのみ (2026-10-15)
 - **git CLI は execFile + 引数配列** — shell 経由しないので injection 不可
 - **ref の argument injection 防御** — URL 由来 ref (GitHub blob URL の `<ref>` 部分等) は `isSafeRef()` で先頭ハイフン / 空白 / シェルメタを拒否してから git に渡す ([`shared/src/git.ts`](./shared/src/git.ts))
 - **webview は厳格 CSP** — `default-src 'none'` + nonce 付き script のみ。MD 中の `<script>` は実行されない
 - **MD 内 raw HTML は通す** (`html: true`) — GitHub と同等。`<img>` で外部 URL を load しうるので、信頼できない MD を開く際はトラッキング画像の可能性に留意
-- **過剰な権限要求なし** — `extensionDependencies: vscode.git` のみ。Untrusted Workspace でもフル機能 (read-only でリスクが低いため)
+- **過剰な権限要求なし** — `extensionDependencies: vscode.git` のみ。ファイル編集はユーザーのチェック操作を契機に実行する。コマンド実行や設定変更は追加しない (2026-10-15)
 
 脆弱性の報告は本リポジトリの [Issues](https://github.com/xxxaz/vscode-extension/issues) へ。crypto / 個人情報 / 認証情報を扱う拡張ではないので、深刻度の高い脆弱性は想定されていません。
 
