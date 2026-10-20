@@ -131,3 +131,27 @@ test('UTF-8 BOM follows the same decoder as viewer content', async () => {
     await save();
     assert.equal(state.saves, 1);
 });
+
+test('file regenerated after render (rows added, same line) still saves the clicked box', async () => {
+    state.source = state.disk = 'updated 10:01\n- [ ] other\n- [ ] task\n';
+    await save();
+    assert.equal(state.disk, 'updated 10:01\n- [ ] other\n- [x] task\n');
+    assert.equal(state.applied, 1);
+});
+
+test('regenerated file without the clicked line rejects before editing', async () => {
+    state.source = state.disk = '- [ ] renamed\n';
+    await assert.rejects(save(), /変更されています/);
+    assert.equal(state.applied, 0);
+});
+
+test('editor buffer catching up with disk shortly after is waited for', async () => {
+    const next = 'head\n- [ ] task\n';
+    state.disk = next;
+    setTimeout(() => {
+        state.source = next;
+        state.version++;
+    }, 150);
+    await save();
+    assert.equal(state.disk, 'head\n- [x] task\n');
+});

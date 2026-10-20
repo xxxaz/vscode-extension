@@ -147,3 +147,51 @@ export function checkboxEdit(
         return undefined;
     return { offset, text: checked ? 'x' : ' ' };
 }
+
+/**
+ * 描画後にファイルが書き換わっていても (ボードの定期更新など)、押されたチェックと同じ行を現在の内容から探し直す。
+ * 同じ行が複数あるときは、表示時の何番目かで対応付け、数が変わっていれば曖昧なので探さない。
+ */
+export function relocateCheckbox(
+    snapshot: CheckboxSnapshot,
+    current: string,
+    key: string,
+    checked: boolean
+): { offset: number; text: string } | undefined {
+    const offset = snapshot.offsets.get(key);
+    if (offset === undefined) return undefined;
+    const line = lineAt(snapshot.source, offset);
+    const column = offset - line.start;
+    const sameBefore = linesEqual(snapshot.source, line.text);
+    const sameNow = linesEqual(current, line.text);
+    if (sameBefore.length !== sameNow.length) return undefined;
+    const index = sameBefore.indexOf(line.start);
+    const start = sameNow[index];
+    if (start === undefined) return undefined;
+    const marker = current.slice(start + column - 1, start + column + 2);
+    if (!/^\[[ xX]\]$/.test(marker) || (marker[1] !== ' ') === checked)
+        return undefined;
+    return { offset: start + column, text: checked ? 'x' : ' ' };
+}
+
+function lineAt(
+    source: string,
+    offset: number
+): { start: number; text: string } {
+    const start = Math.max(
+        source.lastIndexOf('\n', offset - 1),
+        source.lastIndexOf('\r', offset - 1)
+    ) + 1;
+    const end = source.slice(offset).search(/[\r\n]|$/);
+    return { start, text: source.slice(start, offset + end) };
+}
+
+function linesEqual(source: string, text: string): number[] {
+    const starts: number[] = [];
+    let start = 0;
+    for (const match of source.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
+        if (match[0].replace(/[\r\n]+$/, '') === text) starts.push(start);
+        start += match[0].length;
+    }
+    return starts;
+}
