@@ -12,6 +12,7 @@ import type * as vscode from 'vscode';
  *   - scroll: peer pane との scroll 同期
  */
 export type WebviewAction =
+    | { type: 'toggleCheckbox'; key: string; checked: boolean }
     | { type: 'openText' }
     | { type: 'openHeadDiff' }
     | { type: 'openWorkingTreeDiff' }
@@ -134,6 +135,15 @@ export function buildSinglePaneHtml(opts: SinglePaneOptions): string {
             if (!container) return;
 
             let suppressEmit = false;
+            let checkboxPending = false;
+            container.addEventListener('change', (e) => {
+                const input = e.target;
+                if (!(input instanceof HTMLInputElement) || !input.dataset.mddCheckbox) return;
+                if (checkboxPending) return;
+                checkboxPending = true;
+                container.querySelectorAll('input[data-mdd-checkbox]').forEach((box) => { box.disabled = true; });
+                vscode.postMessage({ type: 'toggleCheckbox', key: input.dataset.mddCheckbox, checked: input.checked });
+            });
 
             // (1) スクロール同期 (sister webview と双方向に同期)
             container.addEventListener('scroll', () => {

@@ -10,3 +10,5 @@ esbuild.config.mjs
 **/*.map
 **/*.ts
 !dist/extension.js
+
+test/**
