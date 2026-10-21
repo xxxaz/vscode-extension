@@ -282,3 +282,11 @@ test('changes to a different checkbox on the same line still reject relocation',
     assert.equal(state.applied, 0);
     assert.equal(state.saves, 0);
 });
+
+test('reordered rows equal except for checked state are ambiguous and never treated as completed', async () => {
+    const initial = { ...snapshot(), source: '- [ ] task\n- [x] task\n' };
+    state.source = state.disk = '- [x] task\n- [ ] task\n';
+    await assert.rejects(saveCheckbox(uri, initial, 'fresh-0', true), /チェック対象の行/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+});

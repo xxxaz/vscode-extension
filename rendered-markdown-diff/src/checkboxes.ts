@@ -150,8 +150,8 @@ export function checkboxEdit(
 
 /**
  * 描画後にファイルが書き換わっていても (ボードの定期更新など)、押されたチェックと同じ行を現在の内容から探し直す。
- * 対象マーカーの状態だけを除いて行を照合する。同じ行が複数あるときは、表示時の何番目かで対応付ける。
- * 数が変わっていれば曖昧なので探さない。要求された状態かどうかは保存側で判定する。
+ * 対象マーカーの状態だけを除いて行を照合する。元と現在で各一件の場合だけ対応付ける。
+ * 複数行の出現順は外部更新で変わりうるため使わない。要求された状態かどうかは保存側で判定する。
  */
 export function relocateCheckbox(
     snapshot: CheckboxSnapshot,
@@ -165,9 +165,8 @@ export function relocateCheckbox(
     const column = offset - line.start;
     const sameBefore = linesEqual(snapshot.source, line.text, column);
     const sameNow = linesEqual(current, line.text, column);
-    if (sameBefore.length !== sameNow.length) return undefined;
-    const index = sameBefore.indexOf(line.start);
-    const start = sameNow[index];
+    if (sameBefore.length !== 1 || sameNow.length !== 1) return undefined;
+    const start = sameNow[0];
     if (start === undefined) return undefined;
     const marker = current.slice(start + column - 1, start + column + 2);
     if (!/^\[[ xX]\]$/.test(marker))
