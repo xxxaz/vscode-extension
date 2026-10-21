@@ -24,6 +24,8 @@ beforeEach(() =>
         saveResult: true,
         onRead: undefined,
         onApply: undefined,
+        onShow: undefined,
+        showOptions: undefined,
         saveError: false,
     })
 );
@@ -58,22 +60,25 @@ test('dirty document is never edited or saved', async () => {
     await assert.rejects(save(), /未保存/);
     assert.equal(state.applied, 0);
     assert.equal(state.saves, 0);
+    assert.equal(state.shown, 0);
 });
 
 test('external regeneration and stale document content reject before editing', async () => {
     state.disk = 'new row\n' + state.disk;
-    await assert.rejects(save(), /変更されています/);
+    await assert.rejects(save(), /内容が一致しません/);
     state.disk = snapshot().source;
     state.source = 'different task\n';
-    await assert.rejects(save(), /変更されています/);
+    await assert.rejects(save(), /内容が一致しません/);
     assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.shown, 2);
 });
 
 test('edit arriving during disk read rejects before apply', async () => {
     state.onRead = () => {
         state.version++;
     };
-    await assert.rejects(save(), /変更されています/);
+    await assert.rejects(save(), /内容が一致しません/);
     assert.equal(state.applied, 0);
 });
 
@@ -141,7 +146,7 @@ test('file regenerated after render (rows added, same line) still saves the clic
 
 test('regenerated file without the clicked line rejects before editing', async () => {
     state.source = state.disk = '- [ ] renamed\n';
-    await assert.rejects(save(), /変更されています/);
+    await assert.rejects(save(), /チェック対象の行/);
     assert.equal(state.applied, 0);
 });
 
@@ -154,4 +159,60 @@ test('editor buffer catching up with disk shortly after is waited for', async ()
     }, 150);
     await save();
     assert.equal(state.disk, 'head\n- [x] task\n');
+    assert.equal(state.shown, 0);
+});
+
+test('missing file notifications: latest board render and stale clean buffer reload before saving', async () => {
+    const source = 'updated 10:01\n- [ ] task\n';
+    state.disk = source;
+    state.onShow = () => {
+        state.source = state.disk;
+        state.version++;
+    };
+    await saveCheckbox(uri, {
+        id: 'fresh', source, offsets: new Map([['fresh-0', source.indexOf('[ ]') + 1]]),
+    }, 'fresh-0', true);
+    assert.equal(state.disk, 'updated 10:01\n- [x] task\n');
+    assert.equal(state.applied, 1);
+    assert.equal(state.shown, 1);
+    assert.deepEqual(state.showOptions, { preview: true, preserveFocus: true, viewColumn: -2 });
+});
+
+test('board changes again while reload is pending: save uses the newest row position', async () => {
+    state.disk = 'updated 10:01\n- [ ] task\n';
+    state.onShow = () => {
+        setTimeout(() => {
+            state.source = state.disk = 'updated 10:02\n- [ ] other\n- [ ] task\n';
+            state.version++;
+        }, 150);
+    };
+    await save();
+    assert.equal(state.disk, 'updated 10:02\n- [ ] other\n- [x] task\n');
+    assert.equal(state.saves, 1);
+});
+
+test('user editing while reload is pending is never saved by the checkbox action', async () => {
+    state.disk = 'new\n- [ ] task\n';
+    state.onShow = () => {
+        state.dirty = true;
+        state.source += 'unsaved user edit';
+        state.version++;
+    };
+    await assert.rejects(save(), /未保存/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.disk, 'new\n- [ ] task\n');
+});
+
+test('failed reload leaves disk intact and releases the save lock', async () => {
+    state.disk = 'new\n- [ ] task\n';
+    state.onShow = () => { throw new Error('editor open failed'); };
+    await assert.rejects(save(), /editor open failed/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.disk, 'new\n- [ ] task\n');
+    state.onShow = undefined;
+    state.source = state.disk;
+    await save();
+    assert.equal(state.disk, 'new\n- [x] task\n');
 });

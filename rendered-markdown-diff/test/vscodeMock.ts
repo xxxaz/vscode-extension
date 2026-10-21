@@ -10,6 +10,8 @@ export const state = {
     saveResult: true,
     onRead: undefined as (() => void) | undefined,
     onApply: undefined as (() => void) | undefined,
+    onShow: undefined as (() => void) | undefined,
+    showOptions: undefined as unknown,
     saveError: false,
 };
 export const uri = { scheme: 'file', toString: () => 'file:///test.md' };
@@ -68,8 +70,10 @@ export const workspace = {
     },
 };
 export const window = {
-    showTextDocument: async () => {
+    showTextDocument: async (_document: unknown, options: unknown) => {
         state.shown++;
+        state.showOptions = options;
+        state.onShow?.();
     },
 };
 export const ViewColumn = { Beside: -2 };

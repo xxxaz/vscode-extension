@@ -4,6 +4,7 @@ import { checkboxEdit, relocateCheckbox, type CheckboxSnapshot } from './checkbo
 const editing = new Set<string>();
 const SETTLE_ATTEMPTS = 5;
 const SETTLE_MS = 100;
+const RELOAD_ATTEMPTS = 20;
 
 /** 既存の未保存編集を保存せず、表示した内容の一文字だけを通常の Undo 履歴に加える。 */
 export async function saveCheckbox(
@@ -31,7 +32,8 @@ export async function saveCheckbox(
                 '未保存の編集があります。テキストエディタで保存または取り消してから操作してください'
             );
         // ボードの定期更新など、描画後にファイルが書き換わっていても、同じ行を探し直して押された通りに保存する。
-        // ディスクとバッファが揃うまで (watcher の反映待ち) は短く待ち直す
+        // 通知が届かない場合は clean な対象をテキストエディタにも開き、通常の再読込みを促す。
+        // Revert コマンドはアクティブな別ファイルの未保存編集を破棄しうるため使わない。
         let base = '';
         let version = 0;
         let edit: { offset: number; text: string } | undefined;
@@ -46,10 +48,17 @@ export async function saveCheckbox(
                     '未保存の編集があります。テキストエディタで保存または取り消してから操作してください'
                 );
             if (disk === base && document.version === version) break;
-            if (attempt >= SETTLE_ATTEMPTS)
+            if (attempt >= SETTLE_ATTEMPTS + RELOAD_ATTEMPTS)
                 throw new Error(
-                    'ファイルが変更されています。描き直してから操作してください'
+                    'ファイルとテキストエディタの内容が一致しません。テキストエディタで内容を確認してから操作してください'
                 );
+            if (attempt === SETTLE_ATTEMPTS) {
+                await vscode.window.showTextDocument(document, {
+                    preview: true,
+                    preserveFocus: true,
+                    viewColumn: vscode.ViewColumn.Beside,
+                });
+            }
             await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
         }
         edit =
@@ -58,7 +67,7 @@ export async function saveCheckbox(
                 : relocateCheckbox(snapshot, base, key as string, checked as boolean);
         if (!edit)
             throw new Error(
-                'ファイルが変更されています。描き直してから操作してください'
+                'チェック対象の行が変更または削除されています。描き直してから操作してください'
             );
         const change = new vscode.WorkspaceEdit();
         change.replace(
