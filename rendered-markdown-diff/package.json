@@ -2,7 +2,7 @@
     "name": "rendered-markdown-diff",
     "displayName": "Rendered Markdown Diff",
     "description": "Render *.md as default editor with git-aware diff highlights (gutter hints when standalone, inline ハイライト when in a diff editor)",
-    "version": "0.7.1",
+    "version": "0.7.2",
     "publisher": "xxxaz",
     "license": "MIT",
     "icon": "icon.png",

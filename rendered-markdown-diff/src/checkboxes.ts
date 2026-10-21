@@ -150,7 +150,8 @@ export function checkboxEdit(
 
 /**
  * 描画後にファイルが書き換わっていても (ボードの定期更新など)、押されたチェックと同じ行を現在の内容から探し直す。
- * 同じ行が複数あるときは、表示時の何番目かで対応付け、数が変わっていれば曖昧なので探さない。
+ * 対象マーカーの状態だけを除いて行を照合する。同じ行が複数あるときは、表示時の何番目かで対応付ける。
+ * 数が変わっていれば曖昧なので探さない。要求された状態かどうかは保存側で判定する。
  */
 export function relocateCheckbox(
     snapshot: CheckboxSnapshot,
@@ -162,14 +163,14 @@ export function relocateCheckbox(
     if (offset === undefined) return undefined;
     const line = lineAt(snapshot.source, offset);
     const column = offset - line.start;
-    const sameBefore = linesEqual(snapshot.source, line.text);
-    const sameNow = linesEqual(current, line.text);
+    const sameBefore = linesEqual(snapshot.source, line.text, column);
+    const sameNow = linesEqual(current, line.text, column);
     if (sameBefore.length !== sameNow.length) return undefined;
     const index = sameBefore.indexOf(line.start);
     const start = sameNow[index];
     if (start === undefined) return undefined;
     const marker = current.slice(start + column - 1, start + column + 2);
-    if (!/^\[[ xX]\]$/.test(marker) || (marker[1] !== ' ') === checked)
+    if (!/^\[[ xX]\]$/.test(marker))
         return undefined;
     return { offset: start + column, text: checked ? 'x' : ' ' };
 }
@@ -186,11 +187,17 @@ function lineAt(
     return { start, text: source.slice(start, offset + end) };
 }
 
-function linesEqual(source: string, text: string): number[] {
+function linesEqual(source: string, text: string, checkboxColumn: number): number[] {
     const starts: number[] = [];
     let start = 0;
     for (const match of source.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
-        if (match[0].replace(/[\r\n]+$/, '') === text) starts.push(start);
+        const candidate = match[0].replace(/[\r\n]+$/, '');
+        const marker = candidate.slice(checkboxColumn - 1, checkboxColumn + 2);
+        if (
+            /^\[[ xX]\]$/.test(marker) &&
+            candidate.slice(0, checkboxColumn) === text.slice(0, checkboxColumn) &&
+            candidate.slice(checkboxColumn + 1) === text.slice(checkboxColumn + 1)
+        ) starts.push(start);
         start += match[0].length;
     }
     return starts;

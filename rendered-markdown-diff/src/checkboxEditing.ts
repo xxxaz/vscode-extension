@@ -69,6 +69,7 @@ export async function saveCheckbox(
             throw new Error(
                 'チェック対象の行が変更または削除されています。描き直してから操作してください'
             );
+        if ((base[edit.offset] !== ' ') === (edit.text === 'x')) return;
         const change = new vscode.WorkspaceEdit();
         change.replace(
             uri,

@@ -216,3 +216,69 @@ test('failed reload leaves disk intact and releases the save lock', async () => 
     await save();
     assert.equal(state.disk, 'new\n- [x] task\n');
 });
+
+const boardRow = (id: string, checked = false) => `| [${checked ? 'x' : ' '}] | ${id} | 3 | 同じ依頼 |\n`;
+const boardSnapshot = (source: string, id: string) => {
+    const at = source.indexOf(`| ${id} |`);
+    const offset = source.lastIndexOf('[ ]', at) + 1;
+    assert.ok(at >= 0 && offset > 0);
+    return { id: 'board', source, offsets: new Map([['board-0', offset]]) };
+};
+
+test('board log reorders identical descriptions: the clicked ID is edited at its new position', async () => {
+    const before = boardRow('U271') + boardRow('U272');
+    state.source = state.disk = 'updated\n' + boardRow('U272') + boardRow('U271');
+    await saveCheckbox(uri, boardSnapshot(before, 'U271'), 'board-0', true);
+    assert.equal(state.disk, 'updated\n' + boardRow('U272') + boardRow('U271', true));
+    assert.equal(state.applied, 1);
+});
+
+test('board ingestion removes the clicked row: do not recreate it or check the next row', async () => {
+    const before = boardRow('U271') + boardRow('U272');
+    state.source = state.disk = boardRow('U272');
+    await assert.rejects(saveCheckbox(uri, boardSnapshot(before, 'U271'), 'board-0', true), /チェック対象の行/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.disk, boardRow('U272'));
+    assert.equal(state.shown, 0);
+});
+
+test('another save already checked and reordered the target: succeed without writing', async () => {
+    const before = boardRow('U271') + boardRow('U272');
+    state.source = state.disk = boardRow('U272') + boardRow('U271', true);
+    await saveCheckbox(uri, boardSnapshot(before, 'U271'), 'board-0', true);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.disk, boardRow('U272') + boardRow('U271', true));
+});
+
+test('identical rows change in number: reject ambiguous relocation without editing', async () => {
+    const before = boardRow('U271') + boardRow('U271');
+    state.source = state.disk = boardRow('U271');
+    await assert.rejects(saveCheckbox(uri, boardSnapshot(before, 'U271'), 'board-0', true), /チェック対象の行/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+});
+
+test('already checked uppercase marker succeeds without adding an undo entry', async () => {
+    state.source = state.disk = '- [X] task\n';
+    await save();
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+    assert.equal(state.disk, '- [X] task\n');
+});
+
+test('already unchecked target after an external update also succeeds without writing', async () => {
+    const initial = { ...snapshot(), source: '- [x] task\n' };
+    await saveCheckbox(uri, initial, 'fresh-0', false);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+});
+
+test('changes to a different checkbox on the same line still reject relocation', async () => {
+    const initial = { ...snapshot(), source: '- [ ] task [ ] other\n' };
+    state.source = state.disk = '- [ ] task [x] other\n';
+    await assert.rejects(saveCheckbox(uri, initial, 'fresh-0', true), /チェック対象の行/);
+    assert.equal(state.applied, 0);
+    assert.equal(state.saves, 0);
+});
