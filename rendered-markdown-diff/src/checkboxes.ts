@@ -89,7 +89,9 @@ export function checkboxPlugin(md: MarkdownIt): void {
                 }
             }
             const hasHtml = block.children.some(
-                (token) => token.type === 'html_inline'
+                (token, i) =>
+                    token.type === 'html_inline' &&
+                    !isInertHtml(block.children!, i)
             );
             for (const token of block.children) {
                 if (token.type !== 'mdd_checkbox') continue;
@@ -117,6 +119,26 @@ export function checkboxPlugin(md: MarkdownIt): void {
         const editable = token.attrGet('data-mdd-checkbox') !== null;
         return `<input type="checkbox" class="mdd-checkbox" aria-label="完了"${token.content[1] !== ' ' ? ' checked' : ''}${editable ? '' : ' disabled'}${renderer.renderAttrs(token)}>`;
     };
+}
+
+/** 文字を囲まない HTML (コメント・改行・中身が空の id/name だけのアンカー) は、チェックの位置対応に影響しない。 */
+function isInertHtml(
+    tokens: { type: string; content: string }[],
+    index: number
+): boolean {
+    const html = tokens[index].content;
+    if (/^<!--[\s\S]*-->$/.test(html) || /^<br\s*\/?>$/i.test(html))
+        return true;
+    if (/^<a\s+(?:id|name)="[^"<>]*"\s*>$/i.test(html))
+        return (
+            tokens[index + 1]?.type === 'html_inline' &&
+            /^<\/a\s*>$/i.test(tokens[index + 1].content)
+        );
+    return (
+        /^<\/a\s*>$/i.test(html) &&
+        index > 0 &&
+        /^<a\s+(?:id|name)="[^"<>]*"\s*>$/i.test(tokens[index - 1].content)
+    );
 }
 
 function normalizeTableLine(line: string): {

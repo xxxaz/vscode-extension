@@ -86,3 +86,11 @@ test('forged identifiers, malformed state and duplicate state are rejected', () 
         text: 'x',
     });
 });
+
+test('empty id anchors, comments and br do not disable the box; wrapping HTML still does', () => {
+    const source =
+        '- [ ] <a id="u1"></a>task\n- [ ] two <!-- c -->\n- [ ] <a href="x">link</a>\n- [ ] <code>x</code>\n\n| [ ] | a<br>b |\n| --- | --- |\n| [ ] | <a id="u2"></a>c |\n';
+    const { snapshot, html } = render(source);
+    assert.equal(snapshot.offsets.size, 4);
+    assert.equal((html.match(/data-mdd-checkbox/g) ?? []).length, 4);
+});
