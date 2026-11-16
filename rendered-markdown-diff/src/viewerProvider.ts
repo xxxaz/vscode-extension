@@ -749,6 +749,13 @@ function setupActionHandlers(
                         await opts.refresh();
                     }
                     return;
+                case 'copyText': {
+                    // 1 回のコピーで扱う文字数に上限 (webview からの入力なので型と長さを確かめる)
+                    const ok = typeof msg.text === 'string' && msg.text.length <= 1_000_000;
+                    if (ok) await vscode.env.clipboard.writeText(msg.text);
+                    await panel.webview.postMessage({ type: 'copied', ok });
+                    return;
+                }
                 case 'openText':
                     if (opts.openTextUri)
                         await openInTextEditor(

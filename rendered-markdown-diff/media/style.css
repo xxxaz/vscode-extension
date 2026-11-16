@@ -515,3 +515,25 @@ body {
     /* cspell:disable-next-line */
     font-variant-numeric: tabular-nums;
 }
+
+/* コードのコピーボタン (ホバー中の code / pre に 1 個だけ浮かぶ) */
+.mdd-copy-btn {
+    position: fixed;
+    z-index: 20;
+    padding: 1px 8px;
+    font-size: 11px;
+    line-height: 18px;
+    cursor: pointer;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    background: var(--vscode-button-secondaryBackground, var(--vscode-editorWidget-background));
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+}
+
+.mdd-copy-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.mdd-copy-btn[hidden] {
+    display: none;
+}

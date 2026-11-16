@@ -13,6 +13,8 @@ import type * as vscode from 'vscode';
  */
 export type WebviewAction =
     | { type: 'toggleCheckbox'; key: string; checked: boolean }
+    /** コード (インライン / ブロック) のテキストをクリップボードへコピーする (host が書き込み、結果を `copied` で返す) */
+    | { type: 'copyText'; text: string }
     | { type: 'openText' }
     | { type: 'openHeadDiff' }
     | { type: 'openWorkingTreeDiff' }
@@ -152,8 +154,69 @@ export function buildSinglePaneHtml(opts: SinglePaneOptions): string {
                 vscode.postMessage({ type: 'scroll', ratio: container.scrollTop / max });
             }, { passive: true });
 
+            // (1b) コードのコピーボタン (ホバーで 1 個だけ浮かぶ。レイアウトは変えない)
+            //      書き込みは host の vscode.env.clipboard (webview の navigator.clipboard は権限に依存するため使わない)
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'mdd-copy-btn';
+            copyBtn.textContent = 'コピー';
+            copyBtn.title = 'このコードをクリップボードにコピー';
+            copyBtn.hidden = true;
+            document.body.appendChild(copyBtn);
+            let copyTarget = null;
+            let copyHideTimer = 0;
+            let copyLabelTimer = 0;
+            function copyHost(el) {
+                return el.closest('pre') || el;
+            }
+            function showCopy(el) {
+                clearTimeout(copyHideTimer);
+                if (copyTarget !== el) {
+                    copyTarget = el;
+                    clearTimeout(copyLabelTimer);
+                    copyBtn.textContent = 'コピー';
+                }
+                const r = copyHost(el).getBoundingClientRect();
+                copyBtn.hidden = false;
+                const w = copyBtn.offsetWidth;
+                copyBtn.style.top = Math.max(0, r.top - copyBtn.offsetHeight + (el.closest('pre') ? copyBtn.offsetHeight + 4 : 0)) + 'px';
+                copyBtn.style.left = Math.max(0, Math.min(window.innerWidth - w - 4, r.right - w - (el.closest('pre') ? 4 : 0))) + 'px';
+            }
+            function hideCopySoon() {
+                clearTimeout(copyHideTimer);
+                copyHideTimer = setTimeout(() => { copyBtn.hidden = true; copyTarget = null; }, 250);
+            }
+            function codeOf(t) {
+                if (!(t instanceof Element)) return null;
+                if (t === copyBtn) return copyTarget;
+                const pre = t.closest('pre');
+                const code = (pre && pre.querySelector('code')) || t.closest('code');
+                return code && container.contains(code) ? code : null;
+            }
+            document.addEventListener('mouseover', (e) => {
+                const code = codeOf(e.target);
+                if (code) showCopy(code);
+            });
+            document.addEventListener('mouseout', (e) => {
+                if (codeOf(e.target)) hideCopySoon();
+            });
+            container.addEventListener('scroll', () => { copyBtn.hidden = true; copyTarget = null; }, { passive: true });
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!copyTarget) return;
+                let text = copyTarget.textContent || '';
+                if (copyTarget.closest('pre') && text.charCodeAt(text.length - 1) === 10) text = text.slice(0, -1);
+                vscode.postMessage({ type: 'copyText', text });
+            });
+
             window.addEventListener('message', (e) => {
                 const msg = e.data;
+                if (msg && msg.type === 'copied') {
+                    copyBtn.textContent = msg.ok ? 'コピーしました' : 'コピーできませんでした';
+                    clearTimeout(copyLabelTimer);
+                    copyLabelTimer = setTimeout(() => { copyBtn.textContent = 'コピー'; }, 1200);
+                    return;
+                }
                 if (!msg || msg.type !== 'scroll') return;
                 const max = Math.max(1, container.scrollHeight - container.clientHeight);
                 suppressEmit = true;
