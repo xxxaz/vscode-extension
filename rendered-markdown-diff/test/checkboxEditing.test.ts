@@ -86,10 +86,11 @@ test('external edit arriving after apply is not overwritten by save', async () =
     state.onApply = () => {
         state.disk = 'external changes';
     };
-    await assert.rejects(save(), /編集中/);
+    await assert.rejects(save(), (e: Error) => e.name === 'Error' && /編集中.*未保存のまま/.test(e.message) && 'document' in e);
     assert.equal(state.saves, 0);
     assert.equal(state.disk, 'external changes');
-    assert.equal(state.shown, 1);
+    // 外部プロセスが直後に書き換えても、ソースのタブは自動で開かない
+    assert.equal(state.shown, 0);
 });
 
 test('concurrent buffer edit after apply is not saved', async () => {
@@ -99,7 +100,7 @@ test('concurrent buffer edit after apply is not saved', async () => {
     };
     await assert.rejects(save(), /編集中/);
     assert.equal(state.saves, 0);
-    assert.equal(state.shown, 1);
+    assert.equal(state.shown, 0);
 });
 
 test('failed apply leaves disk unchanged', async () => {
@@ -109,16 +110,16 @@ test('failed apply leaves disk unchanged', async () => {
     assert.equal(state.shown, 0);
 });
 
-test('false and throwing save expose unsaved change in text editor', async () => {
+test('false and throwing save keep the unsaved change but never open the text editor', async () => {
     state.saveResult = false;
     await assert.rejects(save(), /保存できません/);
-    assert.equal(state.shown, 1);
+    assert.equal(state.shown, 0);
     assert.equal(state.disk, snapshot().source);
     state.source = snapshot().source;
     state.dirty = false;
     state.saveError = true;
     await assert.rejects(save(), /disk write failed/);
-    assert.equal(state.shown, 2);
+    assert.equal(state.shown, 0);
 });
 
 test('parallel clicks on same file are rejected, lock clears after completion', async () => {

@@ -2,9 +2,24 @@ import * as vscode from 'vscode';
 import { checkboxEdit, relocateCheckbox, type CheckboxSnapshot } from './checkboxes.js';
 
 const editing = new Set<string>();
-const SETTLE_ATTEMPTS = 5;
+// 通知の遅れや外部プロセス (ボードの再生成など) の書き込みで一致しない間は、タブを開かず静かに待つ。
+// 1.5 秒待っても一致しないときだけ再読込みを促す (0.8.0 で 0.5 秒から延長)。
+const SETTLE_ATTEMPTS = 15;
 const SETTLE_MS = 100;
 const RELOAD_ATTEMPTS = 20;
+
+/**
+ * 保存の途中で外部更新・競合が起きて、未保存の 1 文字の変更がバッファに残ったことを表す。
+ * テキストエディタは自動では開かない (開くかは利用者が選ぶ。0.8.0〜)。
+ */
+export class CheckboxUnsavedError extends Error {
+    constructor(
+        message: string,
+        public readonly document: vscode.TextDocument
+    ) {
+        super(message);
+    }
+}
 
 /** 既存の未保存編集を保存せず、表示した内容の一文字だけを通常の Undo 履歴に加える。 */
 export async function saveCheckbox(
@@ -102,10 +117,13 @@ export async function saveCheckbox(
             );
     } catch (error) {
         if (applied && document) {
-            await vscode.window.showTextDocument(document, {
-                preview: false,
-                viewColumn: vscode.ViewColumn.Beside,
-            });
+            throw new CheckboxUnsavedError(
+                (error instanceof Error ? error.message : String(error)).replace(
+                    '保存せずテキストエディタを開きます',
+                    '変更は未保存のままです'
+                ),
+                document
+            );
         }
         throw error;
     } finally {

@@ -1,5 +1,5 @@
 import type { CheckboxSnapshot } from './checkboxes.js';
-import { saveCheckbox } from './checkboxEditing.js';
+import { CheckboxUnsavedError, saveCheckbox } from './checkboxEditing.js';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ContentRef } from '../../shared/src/contentRef.js';
@@ -744,7 +744,16 @@ function setupActionHandlers(
                     try {
                         await saveCheckbox(opts.currentUri, opts.checkboxes, msg.key, msg.checked);
                     } catch (error) {
-                        vscode.window.showErrorMessage('Rendered Markdown Diff: ' + (error instanceof Error ? error.message : String(error)));
+                        const text = 'Rendered Markdown Diff: ' + (error instanceof Error ? error.message : String(error));
+                        if (error instanceof CheckboxUnsavedError) {
+                            // タブを勝手に開かない。未保存の変更を確認したい人だけがボタンで開く
+                            const doc = error.document;
+                            void vscode.window.showErrorMessage(text, 'テキストエディタで開く').then((choice) => {
+                                if (choice) void vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+                            });
+                        } else {
+                            vscode.window.showErrorMessage(text);
+                        }
                     } finally {
                         await opts.refresh();
                     }
