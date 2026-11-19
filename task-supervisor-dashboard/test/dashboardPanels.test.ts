@@ -122,6 +122,14 @@ test('保存したフォルダーのタブを復元し、同じフォルダー�
     assert.equal(view.mock.title, '監督のダッシュボード — second');
     assert.equal(view.mock.disposed, false);
 
+    const duplicate = mockPanel();
+    await host.restore(duplicate.panel, {
+        workspaceUri: second.uri.toString(),
+    });
+    assert.equal(duplicate.mock.disposed, true);
+    assert.deepEqual(host.attached, [{ panel: view.panel, folder: second }]);
+    assert.deepEqual(host.errors, []);
+
     host.selected = second;
     await host.open();
     assert.equal(view.mock.reveals, 1);
@@ -145,25 +153,22 @@ test('保存したフォルダーのタブを復元し、同じフォルダー�
     });
 });
 
-test('旧版の保存状態はフォルダーが一つのときだけ復元する', async () => {
-    const legacyState = {
+test('ワークスペースURIのない保存状態はルート構成に関わらず拒否する', async () => {
+    const state = {
         version: 1,
         query: 'タスク',
         sections: {},
         cards: {},
         scrollTop: 0,
     };
-    const single = mockHost([first]);
-    const view = mockPanel();
-    await single.restore(view.panel, legacyState);
-    assert.deepEqual(single.attached, [{ panel: view.panel, folder: first }]);
-
-    const multiple = mockHost([first, second]);
-    const ambiguous = mockPanel();
-    await multiple.restore(ambiguous.panel, legacyState);
-    assert.equal(ambiguous.mock.disposed, true);
-    assert.deepEqual(multiple.attached, []);
-    assert.equal(multiple.errors.length, 1);
+    for (const folders of [[first], [first, second], [first, remote]]) {
+        const host = mockHost(folders);
+        const view = mockPanel();
+        await host.restore(view.panel, state);
+        assert.equal(view.mock.disposed, true);
+        assert.deepEqual(host.attached, []);
+        assert.equal(host.errors.length, 1);
+    }
 });
 
 test('閉じたフォルダーやfile以外のURI、壊れた保存状態を復元しない', async () => {
@@ -194,7 +199,7 @@ test('閉じたフォルダーやfile以外のURI、壊れた保存状態を復�
     assert.deepEqual(host.created, []);
 });
 
-test('復元とコマンドが同時に同じフォルダーを開いてもタブを一つだけ接続する', async () => {
+test('復元とコマンドが重なったときは開始順に関わらず保存済みタブを残す', async () => {
     for (const restoreFirst of [true, false]) {
         let notifyStarted: () => void = () =>
             assert.fail('開始の待ち合わせがありません');
@@ -218,16 +223,49 @@ test('復元とコマンドが同時に同じフォルダーを開いてもタ�
         const open = () => host.open();
         const pending = restoreFirst ? restore() : open();
         await started;
-        await (restoreFirst ? open() : restore());
+        const concurrent = restoreFirst ? open() : restore();
         finishAttach();
-        await pending;
+        await Promise.all([pending, concurrent]);
 
-        assert.equal(host.attached.length, 1);
+        assert.equal(host.attached.length, restoreFirst ? 1 : 2);
+        assert.equal(host.attached.at(-1)?.panel, restored.panel);
         assert.deepEqual(host.errors, []);
+        assert.equal(restored.mock.disposed, false);
         assert.equal(host.created.length, restoreFirst ? 0 : 1);
-        assert.equal(restored.mock.disposed, !restoreFirst);
-        assert.equal(restored.mock.reveals, restoreFirst ? 1 : 0);
+        if (!restoreFirst)
+            assert.equal(host.created[0].view.mock.disposed, true);
+
+        const reveals = restored.mock.reveals;
+        await host.open();
+        assert.equal(restored.mock.reveals, reveals + 1);
+        assert.equal(host.created.length, restoreFirst ? 0 : 1);
     }
+});
+
+test('破棄された手動タブの接続が遅れて失敗しても復元したタブを再利用する', async () => {
+    let rejectManualAttach: (error: Error) => void = () =>
+        assert.fail('手動タブの接続が始まっていません');
+    const manualAttach = new Promise<void>((_, reject) => {
+        rejectManualAttach = reject;
+    });
+    const restored = mockPanel();
+    const host = mockHost([first], (panel) => {
+        if (panel !== restored.panel) return manualAttach;
+    });
+    const manual = host.open();
+    await Promise.resolve();
+    const restoring = host.restore(restored.panel, {
+        workspaceUri: first.uri.toString(),
+    });
+    rejectManualAttach(new Error('古いタブの接続失敗'));
+    await Promise.all([manual, restoring]);
+
+    assert.equal(host.created[0].view.mock.disposed, true);
+    assert.equal(restored.mock.disposed, false);
+    assert.deepEqual(host.errors, []);
+    await host.open();
+    assert.equal(host.created.length, 1);
+    assert.equal(restored.mock.reveals, 1);
 });
 
 test('接続失敗でタブを破棄し、遅れて届いた破棄通知の後も開き直したタブを再利用する', async () => {

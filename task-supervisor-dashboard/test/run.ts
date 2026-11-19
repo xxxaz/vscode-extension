@@ -5,3 +5,4 @@ import './boardReader.test.ts';
 import './dashboardClient.test.ts';
 import './boardHost.test.ts';
 import './dashboardPanels.test.ts';
+import './extensionHost.test.ts';

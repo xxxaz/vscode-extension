@@ -32,15 +32,17 @@ function restoreFolder(
     folders: readonly vscode.WorkspaceFolder[],
     state: unknown,
 ): vscode.WorkspaceFolder | undefined {
-    if (!state || typeof state !== 'object' || Array.isArray(state)) return;
-    if ('workspaceUri' in state) {
-        if (typeof state.workspaceUri !== 'string') return;
-        return folders.find(
-            (folder) => folder.uri.toString() === state.workspaceUri,
-        );
-    }
-    if ('version' in state && state.version === 1 && folders.length === 1)
-        return folders[0];
+    if (
+        !state ||
+        typeof state !== 'object' ||
+        Array.isArray(state) ||
+        !('workspaceUri' in state) ||
+        typeof state.workspaceUri !== 'string'
+    )
+        return;
+    return folders.find(
+        (folder) => folder.uri.toString() === state.workspaceUri,
+    );
 }
 
 export function registerDashboardPanels({
@@ -52,27 +54,33 @@ export function registerDashboardPanels({
     attach,
     onError,
 }: DashboardPanelDependencies): vscode.Disposable[] {
-    const panels = new Map<string, vscode.WebviewPanel>();
+    const panels = new Map<
+        string,
+        { panel: vscode.WebviewPanel; restored: boolean }
+    >();
     const fileFolders = () =>
         folders().filter((folder) => folder.uri.scheme === 'file');
     const attachPanel = async (
         panel: vscode.WebviewPanel,
         folder: vscode.WorkspaceFolder,
+        restored: boolean,
     ): Promise<void> => {
         const key = folder.uri.toString();
+        const previous = panels.get(key);
+        const entry = { panel, restored };
         const forgetPanel = () => {
-            if (panels.get(key) === panel) panels.delete(key);
+            if (panels.get(key) === entry) panels.delete(key);
         };
-        panels.set(key, panel);
+        panels.set(key, entry);
         panel.onDidDispose(forgetPanel);
+        previous?.panel.dispose();
         try {
             panel.title = panelTitle(folder);
             await attach(panel, folder);
         } catch (error) {
-            if (panels.get(key) === panel) {
-                forgetPanel();
-                panel.dispose();
-            }
+            if (panels.get(key) !== entry) return;
+            forgetPanel();
+            panel.dispose();
             onError(error);
         }
     };
@@ -89,11 +97,11 @@ export function registerDashboardPanels({
                     );
                     return;
                 }
-                if (panels.has(folder.uri.toString())) {
+                if (panels.get(folder.uri.toString())?.restored) {
                     panel.dispose();
                     return;
                 }
-                await attachPanel(panel, folder);
+                await attachPanel(panel, folder, true);
             },
         }),
         registerCommand(OPEN_DASHBOARD_COMMAND, async () => {
@@ -108,7 +116,7 @@ export function registerDashboardPanels({
                 if (!folder) return;
                 const existing = panels.get(folder.uri.toString());
                 if (existing) {
-                    existing.reveal();
+                    existing.panel.reveal();
                     return;
                 }
                 await attachPanel(
@@ -122,6 +130,7 @@ export function registerDashboardPanels({
                         },
                     ),
                     folder,
+                    false,
                 );
             } catch (error) {
                 onError(error);

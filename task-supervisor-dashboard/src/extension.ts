@@ -43,7 +43,10 @@ export function activate(context: vscode.ExtensionContext): void {
     ): void => {
         lastStatus = { type: 'status', message, failed, state, busy };
         for (const entry of entries.values())
-            void entry.then((e) => e.feed.publish(lastStatus));
+            void entry.then(
+                (e) => e.feed.publish(lastStatus),
+                () => {},
+            );
     };
     const folders = () =>
         vscode.workspace.workspaceFolders?.filter(
@@ -80,7 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const root = folder.uri.fsPath;
         const existing = entries.get(root);
         if (existing) return existing;
-        const promise = (async () => {
+        const promise: Promise<Entry> = (async () => {
             let repoUrl: string | undefined;
             try {
                 const remote = (
@@ -153,7 +156,10 @@ export function activate(context: vscode.ExtensionContext): void {
                 { dispose: () => entry.feed.dispose() },
             );
             return entry;
-        })();
+        })().catch((error) => {
+            if (entries.get(root) === promise) entries.delete(root);
+            throw error;
+        });
         entries.set(root, promise);
         return promise;
     };
@@ -322,9 +328,12 @@ export function activate(context: vscode.ExtensionContext): void {
             else
                 status(lastStatus.message, lastStatus.failed, lastStatus.state);
             for (const entry of entries.values())
-                void entry.then((e) => {
-                    if (e.views > 0) e.feed.request();
-                });
+                void entry.then(
+                    (e) => {
+                        if (e.views > 0) e.feed.request();
+                    },
+                    () => {},
+                );
         }
     };
     for (const operation of ['complete', 'ran', 'answer'] as const)
@@ -353,6 +362,15 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         const entry = await entryFor(folder);
         if (closed) return;
+        if (
+            !vscode.workspace.isTrusted ||
+            !folders().some(
+                (current) => current.uri.toString() === folder.uri.toString(),
+            )
+        )
+            throw new Error(
+                '対象フォルダーが閉じられたか、ワークスペースの信頼が解除されました',
+            );
         const webview = owner.webview;
         entry.views++;
         const send = (message: BoardUpdate) => {
@@ -474,7 +492,10 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.commands.registerCommand('xxxaz.task-supervisor.refresh', () => {
             for (const entry of entries.values())
-                void entry.then((e) => e.feed.refresh());
+                void entry.then(
+                    (e) => e.feed.refresh(),
+                    () => {},
+                );
         }),
     );
     context.subscriptions.push(
