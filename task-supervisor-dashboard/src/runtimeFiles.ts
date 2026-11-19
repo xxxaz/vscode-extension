@@ -97,10 +97,8 @@ export function runtimeIO(
             receipt: Receipt,
         ): Promise<RuntimeResult | undefined> => {
             const base = resolve(root, runtimeRelative, 'results');
-            if (
-                !isAbsolute(receipt.resultPath) ||
-                dirname(resolve(receipt.resultPath)) !== base
-            )
+            const resultPath = resolve(receipt.resultPath);
+            if (!isAbsolute(receipt.resultPath) || dirname(resultPath) !== base)
                 throw new Error(
                     '常駐部の結果パスが対象のresults配下ではありません',
                 );
@@ -113,7 +111,7 @@ export function runtimeIO(
             }
             try {
                 const file = await open(
-                    receipt.resultPath,
+                    resultPath,
                     constants.O_RDONLY |
                         constants.O_NOFOLLOW |
                         constants.O_NONBLOCK,

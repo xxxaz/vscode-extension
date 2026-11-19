@@ -425,6 +425,27 @@ test('結果ディレクトリのsymlinkを拒否する', async () => {
         /ディレクトリが不正/,
     );
 });
+test('結果パスの中間symlinkと親参照で対象外の結果を読まない', async () => {
+    await using f = await files();
+    const outside = join(f.root, 'outside');
+    await mkdir(join(outside, 'child'), { recursive: true });
+    const results = join(f.directory, 'results');
+    await symlink(join(outside, 'child'), join(results, 'link'));
+    await writeFile(
+        join(outside, 'result.json'),
+        JSON.stringify({ message: '対象外' }),
+    );
+    await writeFile(
+        join(results, 'result.json'),
+        JSON.stringify({ message: '対象内' }),
+    );
+    const result = await runtimeIO(f.root, async () => '').result({
+        commandId: 'id',
+        status: 'queued',
+        resultPath: `${results}/link/../result.json`,
+    });
+    assert.equal(result?.message, '対象内');
+});
 test('正本記録のない初回だけ旧台帳を選び切替開始後は旧操作を拒否する', async () => {
     await using f = await files();
     const gateway = await createGateway(
