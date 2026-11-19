@@ -10,6 +10,7 @@ import {
     type PendingAnswer,
     type Registry,
 } from '../src/boardClient.ts';
+import { BoardReader } from '../src/boardReader.ts';
 import { UserActionsUnavailable } from '../src/userActionsView.ts';
 
 const board = process.argv[2];
@@ -125,6 +126,7 @@ await ledger.answer(p);
 assert.equal(await ledger.hasAnswer(p), true);
 assert.equal(action(await ledger.read(), 'U2').answers?.length, 1);
 await writeFile(join(dir, 'registry.json'), '{');
+let expectedFailure: UserActionsUnavailable['view'] | undefined;
 await assert.rejects(ledger.read(), (error) => {
     assert.ok(error instanceof UserActionsUnavailable);
     assert.equal(error.view.status, 'unavailable');
@@ -132,6 +134,14 @@ await assert.rejects(ledger.read(), (error) => {
     assert.equal(error.view.source.mode, 'shadow');
     assert.equal(error.view.source.epoch, null);
     assert.equal(error.view.source.error.code, 'registry-read-failed');
+    expectedFailure = error.view;
+    return true;
+});
+assert.ok(expectedFailure);
+const reader = new BoardReader(root, { gateway: async () => ledger });
+await assert.rejects(reader.read(), (error) => {
+    assert.ok(error instanceof UserActionsUnavailable);
+    assert.deepEqual(error.view, expectedFailure);
     return true;
 });
 console.log(

@@ -290,10 +290,6 @@ export class BoardReader {
                     );
             }
         } else {
-            current = JSON.parse(
-                (await load(`${ledgerRelative}/registry.json`)) ?? '',
-            );
-            registry(current);
             const view = this.options.legacyView
                 ? parseUserActionsView(await this.options.legacyView())
                 : commonView(await (await this.options.gateway()).read());
@@ -306,6 +302,10 @@ export class BoardReader {
                 throw new Error(
                     '旧台帳の共通一覧と正本のモード・世代が一致しません',
                 );
+            current = JSON.parse(
+                (await load(`${ledgerRelative}/registry.json`)) ?? '',
+            );
+            registry(current);
             userActions = view;
             current = {
                 ...current,

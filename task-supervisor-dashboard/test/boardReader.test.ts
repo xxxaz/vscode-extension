@@ -437,6 +437,44 @@ test('旧共通読取りの失敗を空の成功表示へ変換しない', async
     await assert.rejects(reader.read(), /最新情報の取得失敗/);
 });
 
+test('旧台帳が破損しても正式読取りが返した取得失敗の情報を保持する', async (t) => {
+    const f = await fixture(t);
+    const view = {
+        schemaVersion: 1,
+        status: 'unavailable',
+        viewVersion: '台帳破損時の表示版',
+        source: {
+            mode: 'shadow',
+            epoch: null,
+            fetchedAt: null,
+            error: {
+                code: 'registry-read-failed',
+                message: '旧台帳が破損しています',
+            },
+        },
+        rows: null,
+    } as const;
+    await writeFile(join(f.base, 'registry.json'), '{');
+    let calls = 0;
+    const reader = new BoardReader(f.root, {
+        gateway: async () => {
+            calls++;
+            return new Ledger(
+                f.root,
+                async () => assert.fail('更新CLIが呼ばれた'),
+                undefined,
+                async () => view,
+            );
+        },
+    });
+    await assert.rejects(reader.read(), (error) => {
+        assert.equal(calls, 1, '補足の台帳を解析する前に正式読取りを呼ぶ');
+        assert.ok(error instanceof UserActionsUnavailable);
+        assert.deepEqual(error.view, view);
+        return true;
+    });
+});
+
 test('共通一覧の取得失敗をエラーの版・理由・前回取得時刻付きで返す', async (t) => {
     const f = await runtimeFixture(t);
     const view = {

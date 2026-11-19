@@ -39,7 +39,7 @@ interface SectionView {
 const operations = new Set(['complete', 'ran', 'answer']);
 const sourceLabels = {
     legacy: '監督台帳',
-    shadow: '常駐部の並行運転',
+    shadow: '切替前の台帳',
     authoritative: '常駐部の正本',
 } satisfies Record<BoardSnapshot['source'], string>;
 

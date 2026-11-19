@@ -132,6 +132,29 @@ function setup(saved?: unknown) {
     return { dom, host, mounted, update, messages, click, row, state, close };
 }
 
+test('旧正本のshadow読取りから常駐部の稼働を推定して表示しない', () => {
+    const app = setup();
+    try {
+        app.update({
+            ...snapshot(),
+            source: 'shadow',
+            userActions: {
+                ...readyView('read-1', 12),
+                source: {
+                    mode: 'shadow',
+                    epoch: null,
+                    fetchedAt: 12,
+                    error: null,
+                },
+            },
+        });
+        assert.match(app.host.textContent!, /切替前の台帳/);
+        assert.doesNotMatch(app.host.textContent!, /常駐部の並行運転/);
+    } finally {
+        app.close();
+    }
+});
+
 test('一覧は全項目・コマンド・件数・監督・対象ルートを省略せず文字として表示する', () => {
     const app = setup();
     try {
