@@ -618,6 +618,7 @@ test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・�
         assert.equal(app.row('U1'), original);
         assert.equal(app.dom.window.document.activeElement, summary);
         assert.equal(original.open, true);
+        app.host.querySelector<HTMLButtonElement>('.refresh')!.focus();
         app.update(moved('held'));
         assert.equal(app.row('U1'), original);
         assert.equal(original.open, true);
@@ -719,5 +720,189 @@ test('カードの開閉を区分に依存せず保存し、旧区分付きキ�
         restored.dispose();
     } finally {
         app.close();
+    }
+});
+
+for (const reverse of [false, true]) {
+    test(`フォーカス中のカードが閉じた完了区分へ移ったときだけ移動先を開く（逆順=${reverse}）`, () => {
+        const app = setup();
+        const makeSnapshot = (destination: string): BoardSnapshot => {
+            const sections = [
+                {
+                    id: 'tasks',
+                    title: '進行中',
+                    defaultOpen: true,
+                    cards: destination === 'tasks' ? [card('T1')] : [],
+                },
+                {
+                    id: 'completed',
+                    title: '完了',
+                    defaultOpen: false,
+                    cards: destination === 'completed' ? [card('T1')] : [],
+                },
+                { id: 'held', title: '保留', defaultOpen: false, cards: [] },
+            ];
+            return {
+                ...snapshot([]),
+                sections: reverse ? sections.reverse() : sections,
+            };
+        };
+        try {
+            app.update(makeSnapshot('tasks'));
+            const row = app.row('T1');
+            row.open = true;
+            const summary = row.querySelector<HTMLElement>('summary')!;
+            summary.focus();
+            app.update(makeSnapshot('completed'));
+            assert.equal(app.row('T1'), row);
+            assert.equal(row.open, true);
+            assert.equal(
+                app.host.querySelector<HTMLDetailsElement>(
+                    '[data-section-id="completed"]',
+                )!.open,
+                true,
+            );
+            assert.equal(app.dom.window.document.activeElement, summary);
+            assert.equal(
+                app.host.querySelector<HTMLDetailsElement>(
+                    '[data-section-id="held"]',
+                )!.open,
+                false,
+            );
+            app.mounted.dispose();
+            const restored = mountBoard(app.host, () => {}, app.state);
+            restored.update({
+                type: 'snapshot',
+                snapshot: makeSnapshot('completed'),
+            });
+            assert.equal(
+                app.host.querySelector<HTMLDetailsElement>(
+                    '[data-section-id="completed"]',
+                )!.open,
+                true,
+            );
+            restored.dispose();
+        } finally {
+            app.close();
+        }
+    });
+}
+
+test('フォーカスのないカードの移動や区分内更新では閉じた区分を開かない', () => {
+    const app = setup();
+    try {
+        const next = {
+            ...snapshot([card()]),
+            sections: [
+                {
+                    id: 'execution',
+                    title: '実行',
+                    defaultOpen: true,
+                    cards: [card()],
+                },
+                {
+                    id: 'completed',
+                    title: '完了',
+                    defaultOpen: false,
+                    cards: [] as BoardCard[],
+                },
+                { id: 'held', title: '保留', defaultOpen: false, cards: [] },
+            ],
+        };
+        app.update(next);
+        app.row('U1').open = true;
+        app.host.querySelector<HTMLButtonElement>('.refresh')!.focus();
+        app.update({
+            ...next,
+            sections: [
+                { ...next.sections[0], cards: [] },
+                { ...next.sections[1], cards: [card()] },
+                next.sections[2],
+            ],
+        });
+        assert.equal(app.row('U1').open, true);
+        assert.equal(
+            app.host.querySelector<HTMLDetailsElement>(
+                '[data-section-id="completed"]',
+            )!.open,
+            false,
+        );
+        assert.equal(
+            app.host.querySelector<HTMLDetailsElement>(
+                '[data-section-id="held"]',
+            )!.open,
+            false,
+        );
+        assert.equal(
+            app.dom.window.document.activeElement,
+            app.host.querySelector('.refresh'),
+        );
+    } finally {
+        app.close();
+    }
+});
+
+test('詳細の各項目をspan・code・リンクごとに別行で表示し、原文・リンク・DOMを保持する', () => {
+    const dom = new JSDOM(
+        boardHtml('vscode-webview://unit', 'test-nonce', 'preview.js'),
+        { pretendToBeVisual: true },
+    );
+    const host = dom.window.document.getElementById('board')!;
+    const messages: BoardMessage[] = [];
+    const board = mountBoard(host, (message) => messages.push(message));
+    try {
+        const item = {
+            ...card(),
+            fields: [
+                {
+                    label: 'ステータス',
+                    parts: [
+                        { text: '作業中' },
+                        { text: 'feature/preview', code: true },
+                        { text: '判断資料', link: link('reference') },
+                    ],
+                },
+                {
+                    label: 'コマンド',
+                    pre: true,
+                    parts: [
+                        {
+                            text: 'node verify.ts\n  --long-option=value',
+                            code: true,
+                        },
+                    ],
+                },
+            ],
+        };
+        board.update({ type: 'snapshot', snapshot: snapshot([item]) });
+        const values = host.querySelectorAll<HTMLElement>('.field-value');
+        const parts = Array.from(values[0].children);
+        assert.deepEqual(
+            parts.map((part) => part.tagName),
+            ['SPAN', 'CODE', 'BUTTON'],
+        );
+        for (const part of parts)
+            assert.equal(dom.window.getComputedStyle(part).display, 'block');
+        assert.equal(dom.window.getComputedStyle(parts[1]).marginTop, '4px');
+        assert.equal(dom.window.getComputedStyle(parts[2]).marginTop, '4px');
+        assert.equal(
+            dom.window.getComputedStyle(values[1]).whiteSpace,
+            'pre-wrap',
+        );
+        assert.equal(values[1].textContent, item.fields[1].parts[0].text);
+        (parts[2] as HTMLButtonElement).click();
+        assert.deepEqual(messages.at(-1), {
+            type: 'open',
+            linkId: 'reference',
+        });
+        board.update({
+            type: 'snapshot',
+            snapshot: snapshot([{ ...item, summary: '新しい補足' }]),
+        });
+        for (const [index, part] of parts.entries())
+            assert.equal(values[0].children[index], part);
+    } finally {
+        board.dispose();
+        dom.window.close();
     }
 });

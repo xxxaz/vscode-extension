@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type TestContext, test } from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import { Ledger, revision } from '../src/boardClient.ts';
 import { BOARD_FILES, BoardReader } from '../src/boardReader.ts';
 import type { ActionGateway } from '../src/gateway.ts';
@@ -124,12 +125,12 @@ test('4原票を読み、原稿の注意・出来事・mtimeを投影する', as
     assert.ok(value.warnings.includes('観測キャッシュの注意'));
     assert.ok(JSON.stringify(value.sections).includes('出来事の原文'));
     assert.ok(JSON.stringify(value.sections).includes(task.title));
-    const mtimes = await Promise.all(
+    const modificationTimes = await Promise.all(
         BOARD_FILES.slice(0, 4).map(
             async (path) => (await stat(join(f.root, path))).mtimeMs,
         ),
     );
-    assert.equal(value.updatedAt, Math.max(...mtimes));
+    assert.equal(value.updatedAt, Math.max(...modificationTimes));
     assert.equal((await f.reader.read()).updatedAt, value.updatedAt);
 });
 
@@ -215,8 +216,14 @@ test('正本snapshot不在・破損・モード不一致で旧台帳へ戻さな
     await assert.rejects(f.reader.read(), /正本スナップショット/);
 });
 
-test('heartbeat不在・古い・未来は保存済みの正本を参考表示し、破損は拒否する', async (t) => {
+test('heartbeat初回不在・古い・未来は参考表示し、既読後の消失・破損は拒否する', async (t) => {
     const f = await runtimeFixture(t);
+    await rm(join(f.base, 'runtime/heartbeat.json'));
+    assert.ok(
+        (await f.reader.read()).warnings.some((warning) =>
+            warning.includes('参考表示'),
+        ),
+    );
     for (const at of [Date.now() - 31_000, Date.now() + 60_000]) {
         await f.save('runtime/heartbeat.json', {
             schemaVersion: 1,
@@ -230,11 +237,7 @@ test('heartbeat不在・古い・未来は保存済みの正本を参考表示�
         );
     }
     await rm(join(f.base, 'runtime/heartbeat.json'));
-    assert.ok(
-        (await f.reader.read()).warnings.some((warning) =>
-            warning.includes('参考表示'),
-        ),
-    );
+    await assert.rejects(f.reader.read(), { code: 'ENOENT' });
     await writeFile(join(f.base, 'runtime/heartbeat.json'), '{');
     await assert.rejects(f.reader.read());
 });
@@ -363,4 +366,91 @@ test('リポジトリURLを投影へ渡し、観測未取得のPRリンクを解
                     'https://github.com/example/project/pull/341',
         ),
     );
+});
+
+for (const name of ['state.json', 'archive.json', 'events.jsonl']) {
+    test(`既読の${name}が消失したとき空表示へ置換しない`, async (t) => {
+        const f = await fixture(t);
+        const before = await f.reader.read();
+        const original = await readFile(join(f.base, name), 'utf8');
+        await rm(join(f.base, name));
+        await assert.rejects(f.reader.read(), { code: 'ENOENT' });
+        await writeFile(join(f.base, name), original);
+        assert.deepEqual((await f.reader.read()).sections, before.sections);
+    });
+}
+
+for (const observation of [
+    'preparing',
+    'unreadable',
+    'snapshot-missing',
+    'snapshot-corrupt',
+]) {
+    test(`${observation}を永続観測しReader再生成後も旧台帳へ戻さない`, async (t) => {
+        const f = await fixture(t);
+        let stored: string | undefined;
+        const observations: string[] = [];
+        let gatewayCalls = 0;
+        const options = {
+            gateway: async () => {
+                gatewayCalls++;
+                return f.gateway();
+            },
+            authoritySeen: () => stored !== undefined,
+            markAuthorityObserved: async (epoch: string) => {
+                await Promise.resolve();
+                stored = epoch;
+                observations.push(epoch);
+            },
+        };
+        if (observation === 'unreadable')
+            await writeFile(join(f.base, 'runtime/authority.json'), '{');
+        else
+            await f.save('runtime/authority.json', {
+                ...authority,
+                mode:
+                    observation === 'preparing' ? 'preparing' : 'authoritative',
+            });
+        if (observation === 'snapshot-corrupt')
+            await writeFile(join(f.base, 'runtime/snapshot.json'), '{');
+        await assert.rejects(new BoardReader(f.root, options).read());
+        assert.equal(
+            stored,
+            observation === 'unreadable' ? 'unreadable' : authority.epoch,
+        );
+        assert.equal(gatewayCalls, 0);
+        assert.deepEqual(observations, [stored]);
+        await rm(join(f.base, 'runtime/authority.json'));
+        await assert.rejects(new BoardReader(f.root, options).read(), /消失/);
+    });
+}
+
+test('切替観測の永続化完了を待ってから準備中の読取りを拒否する', async (t) => {
+    const f = await fixture(t);
+    await f.save('runtime/authority.json', { ...authority, mode: 'preparing' });
+    let started = () => {};
+    const entered = new Promise<void>((resolve) => {
+        started = resolve;
+    });
+    let release = () => {};
+    const saving = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    let settled = false;
+    const reader = new BoardReader(f.root, {
+        gateway: f.gateway,
+        markAuthorityObserved: async () => {
+            started();
+            await saving;
+        },
+    });
+    const reading = reader.read().finally(() => {
+        settled = true;
+    });
+    const rejected = assert.rejects(reading, /切替準備中/);
+    await entered;
+    await setImmediate();
+    assert.equal(settled, false);
+    release();
+    await rejected;
 });

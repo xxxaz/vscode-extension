@@ -6,6 +6,10 @@ import type {
     BoardTarget,
 } from './dashboardTypes.ts';
 
+export function isOutsideRelative(path: string): boolean {
+    return path === '..' || /^\.\.[\\/]/.test(path) || isAbsolute(path);
+}
+
 export function parseBoardMessage(value: unknown): BoardMessage | undefined {
     if (!value || typeof value !== 'object' || !('type' in value)) return;
     if (value.type === 'ready' || value.type === 'refresh')
@@ -95,12 +99,7 @@ export function resolveBoardTarget(
             : target.path,
     );
     const inside = relative(resolve(root), file);
-    if (
-        inside === '..' ||
-        inside.startsWith('../') ||
-        isAbsolute(inside) ||
-        file.includes('\0')
-    )
+    if (isOutsideRelative(inside) || file.includes('\0'))
         throw new Error('ワークスペース外のファイルは開けません');
     return { file };
 }

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { type Interaction, record } from './actions.ts';
@@ -12,6 +12,7 @@ import { BoardFeed } from './boardFeed.ts';
 import {
     findBoardLink,
     hasBoardOperation,
+    isOutsideRelative,
     parseBoardMessage,
     resolveBoardTarget,
 } from './boardHost.ts';
@@ -113,6 +114,12 @@ export function activate(context: vscode.ExtensionContext): void {
                     !!context.workspaceState.get(
                         `taskSupervisor.authority:${root}`,
                     ),
+                markAuthorityObserved: async (epoch) => {
+                    await context.workspaceState.update(
+                        `taskSupervisor.authority:${root}`,
+                        epoch,
+                    );
+                },
                 repoUrl,
             });
             const entry: Entry = {
@@ -395,11 +402,7 @@ export function activate(context: vscode.ExtensionContext): void {
                             const base = await realpath(folder.uri.fsPath);
                             const path = await realpath(target.file);
                             const rel = relative(base, path);
-                            if (
-                                rel === '..' ||
-                                rel.startsWith('../') ||
-                                isAbsolute(rel)
-                            )
+                            if (isOutsideRelative(rel))
                                 throw new Error(
                                     'リンク先がワークスペース外を指しています',
                                 );

@@ -433,6 +433,10 @@ export function mountBoard(
             doc.activeElement instanceof window.HTMLElement
                 ? doc.activeElement
                 : null;
+        const focusedCard = focused?.closest('.card');
+        const focusedSectionId =
+            focused?.closest<HTMLElement>('.board-section')?.dataset.sectionId;
+        let expandedForFocus = false;
         const scrolls: [Element, number, number][] = [
             host,
             scrollElement(),
@@ -505,6 +509,15 @@ export function mountBoard(
             section.cards.forEach((card, cardIndex) => {
                 const row = previousCards.get(card.id) ?? createCard(card);
                 view.cards.set(card.id, row);
+                if (
+                    row.node === focusedCard &&
+                    focusedSectionId &&
+                    focusedSectionId !== section.id
+                ) {
+                    view.node.open = true;
+                    saved.sections[section.id] = true;
+                    expandedForFocus = true;
+                }
                 patchCard(row, card);
                 if (view.list.children[cardIndex] !== row.node)
                     view.list.insertBefore(
@@ -530,6 +543,7 @@ export function mountBoard(
             host.scrollTop = saved.scrollTop;
             scrollElement().scrollTop = saved.scrollTop;
         }
+        if (expandedForFocus) persist();
     };
     const onClick = (event: Event) => {
         const target = event.target;

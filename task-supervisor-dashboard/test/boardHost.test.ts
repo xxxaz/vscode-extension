@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { posix, win32 } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { runInNewContext } from 'node:vm';
+import { transform } from 'esbuild';
 import { type Interaction, record } from '../src/actions.ts';
 import {
     type Action,
@@ -27,6 +31,57 @@ function snapshot(updatedAt = 1): BoardSnapshot {
         counts: [],
     };
 }
+test('WindowsとPOSIXの実path解決でもroot外・別driveを拒否する', async () => {
+    const source = await readFile(
+        new URL('../src/boardHost.ts', import.meta.url),
+        'utf8',
+    );
+    const code = (
+        await transform(source, {
+            loader: 'ts',
+            format: 'cjs',
+            target: 'es2022',
+        })
+    ).code;
+    for (const [paths, root, inside, outside] of [
+        [
+            win32,
+            'C:\\repo',
+            'C:\\repo\\docs\\a.md',
+            ['..\\outside.md', 'D:\\secret.md', '\\\\server\\share\\secret'],
+        ],
+        [
+            posix,
+            '/repo',
+            '/repo/docs/a.md',
+            ['../outside.md', '/elsewhere/a.md'],
+        ],
+    ] as const) {
+        const module = { exports: {} };
+        runInNewContext(code, {
+            module,
+            exports: module.exports,
+            URL,
+            require: (id: string) => {
+                assert.equal(id, 'node:path');
+                return paths;
+            },
+        });
+        const api = module.exports as {
+            resolveBoardTarget: typeof resolveBoardTarget;
+        };
+        for (const path of outside)
+            assert.throws(
+                () => api.resolveBoardTarget(root, { kind: 'file', path }),
+                /ワークスペース外/,
+            );
+        const result = api.resolveBoardTarget(root, {
+            kind: 'file',
+            path: inside,
+        });
+        assert.equal('file' in result ? result.file : '', inside);
+    }
+});
 test('原票の更新が読取り中に続いても並行読取りせず最新まで取り直す', async () => {
     let finish: (value: BoardSnapshot) => void = () => {};
     let reads = 0;

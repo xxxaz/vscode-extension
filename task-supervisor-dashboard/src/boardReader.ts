@@ -84,10 +84,12 @@ async function stamp(path: string): Promise<string | undefined> {
 
 export class BoardReader {
     private seenAuthority = false;
+    private readonly observedFiles = new Set<string>();
     private readonly root: string;
     private readonly options: {
         gateway: () => Promise<ActionGateway>;
         authoritySeen?: () => boolean;
+        markAuthorityObserved?: (epoch: string) => Promise<void>;
         repoUrl?: string;
     };
     constructor(
@@ -95,6 +97,7 @@ export class BoardReader {
         options: {
             gateway: () => Promise<ActionGateway>;
             authoritySeen?: () => boolean;
+            markAuthorityObserved?: (epoch: string) => Promise<void>;
             repoUrl?: string;
         },
     ) {
@@ -127,15 +130,24 @@ export class BoardReader {
         );
     }
 
-    private async readOnce(): Promise<BoardSnapshot> {
+    private async observeAuthority(): Promise<Authority | undefined> {
         let authority: Authority | undefined;
         try {
             authority = await readAuthority(this.root);
         } catch (error) {
             this.seenAuthority = true;
+            await this.options.markAuthorityObserved?.('unreadable');
             throw error;
         }
-        if (authority) this.seenAuthority = true;
+        if (authority) {
+            this.seenAuthority = true;
+            await this.options.markAuthorityObserved?.(authority.epoch);
+        }
+        return authority;
+    }
+
+    private async readOnce(): Promise<BoardSnapshot> {
+        const authority = await this.observeAuthority();
         if (
             !authority &&
             (this.seenAuthority || this.options.authoritySeen?.())
@@ -159,11 +171,13 @@ export class BoardReader {
                 const text = await readFile(path, 'utf8');
                 loaded = true;
                 modificationTimes.push((await stat(path)).mtimeMs);
+                this.observedFiles.add(relative);
                 return text;
             } catch (error) {
                 if (
                     !loaded &&
                     optional &&
+                    !this.observedFiles.has(relative) &&
                     (error as NodeJS.ErrnoException).code === 'ENOENT'
                 ) {
                     warnings.push(
@@ -186,6 +200,9 @@ export class BoardReader {
         };
         let current: unknown;
         if (authority) {
+            warnings.push(
+                '常駐部の孤立・稼働・待機・報告の詳細表示は次段階で対応します。この一覧だけで正常とは判定しません',
+            );
             await load(`${runtimeRelative}/authority.json`);
             const raw: unknown = JSON.parse(
                 (await load(`${runtimeRelative}/snapshot.json`)) ?? '',
@@ -274,14 +291,7 @@ export class BoardReader {
         )
             throw new Error('監督台帳の状態またはアーカイブの形式が不正です');
         const history = events(eventText ?? '', warnings);
-        let latestAuthority: Authority | undefined;
-        try {
-            latestAuthority = await readAuthority(this.root);
-        } catch (error) {
-            this.seenAuthority = true;
-            throw error;
-        }
-        if (latestAuthority) this.seenAuthority = true;
+        const latestAuthority = await this.observeAuthority();
         if (JSON.stringify(authority) !== JSON.stringify(latestAuthority))
             throw new ChangedWhileReading();
         return projectBoard({

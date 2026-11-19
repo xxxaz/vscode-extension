@@ -76,6 +76,8 @@ p { margin: 0; }
 dt { color: var(--muted); font-size: .92em; }
 dd { margin: 0; min-width: 0; }
 .field-value { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.field-value > * { display: block; }
+.field-value > * + * { margin-top: 4px; }
 pre.field-value { font-family: var(--vscode-editor-font-family, ui-monospace, monospace); font-size: .92em; line-height: 1.7; padding: 9px 10px; background: var(--vscode-textCodeBlock-background, var(--surface)); border-radius: 3px; }
 code { font-family: var(--vscode-editor-font-family, ui-monospace, monospace); font-size: .95em; }
 .card-links { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 12px; }
