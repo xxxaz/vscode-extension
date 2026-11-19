@@ -16,6 +16,7 @@ export interface Action {
     needsOk?: boolean;
     ranAt?: number;
     priority?: number;
+    createdAt?: number;
     doc?: string;
     holdReason?: string;
     withdrawal?: unknown;
@@ -74,8 +75,14 @@ export function candidates(r: Registry, operation: Operation): Action[] {
         )
         .sort(
             (a, b) =>
-                (a.priority ?? Number.MAX_SAFE_INTEGER) -
-                    (b.priority ?? Number.MAX_SAFE_INTEGER) ||
+                (a.priority === b.priority
+                    ? 0
+                    : a.priority === undefined
+                      ? 1
+                      : b.priority === undefined
+                        ? -1
+                        : a.priority - b.priority) ||
+                (a.createdAt ?? 0) - (b.createdAt ?? 0) ||
                 a.id.localeCompare(b.id, 'en', { numeric: true }),
         );
 }

@@ -4,6 +4,7 @@ import {
     candidates,
     type Operation,
     type PendingAnswer,
+    revision,
 } from './boardClient.ts';
 import { type ActionGateway, OperationPending } from './gateway.ts';
 
@@ -14,7 +15,7 @@ export interface Interaction {
     input(title: string, value?: string): Promise<string | undefined>;
     answerInput(initial?: string): Promise<string | undefined>;
     confirm(message: string, detail: string): Promise<boolean>;
-    info(message: string): void;
+    info(message: string, state?: 'info' | 'pending' | 'success'): void;
     error(message: string): void;
 }
 export interface Drafts {
@@ -27,6 +28,7 @@ export async function record(
     ledger: ActionGateway,
     ui: Interaction,
     drafts: Drafts,
+    selected?: { id: string; revision: string },
 ): Promise<void> {
     let pending: PendingAnswer | undefined;
     let previous: PendingAnswer | undefined;
@@ -36,14 +38,30 @@ export async function record(
         if (resumed) {
             if (drafts.get(key)?.commandId === resumed.commandId)
                 await drafts.set(key, undefined);
-            ui.info(resumed.message);
+            ui.info(resumed.message, 'success');
             return;
         }
+        const selectedRow = selected
+            ? candidates(await ledger.read(), operation).find(
+                  (a) => a.id === selected.id,
+              )
+            : undefined;
+        if (
+            selected &&
+            (!selectedRow || revision(selectedRow) !== selected.revision)
+        )
+            throw new Error(
+                '一覧の依頼が更新されました。最新の行を確認して操作してください',
+            );
         if (operation === 'answer') pending = drafts.get(key);
         if (pending) {
+            if (selected && pending.id !== selected.id)
+                throw new Error(
+                    `${pending.id} の未保存回答を保持しています。先にその依頼の回答を確認してください`,
+                );
             if (await ledger.hasAnswer(pending)) {
                 await drafts.set(key, undefined);
-                ui.info(`${pending.id} の回答は台帳へ保存済みです`);
+                ui.info(`${pending.id} の回答は台帳へ保存済みです`, 'success');
                 return;
             }
             const recovery = await ui.recover();
@@ -58,7 +76,7 @@ export async function record(
                     return;
                 await ledger.answer(pending);
                 await drafts.set(key, undefined);
-                ui.info(`${pending.id} の回答と完了を記録しました`);
+                ui.info(`${pending.id} の回答と完了を記録しました`, 'success');
                 return;
             }
             previous = pending;
@@ -73,7 +91,7 @@ export async function record(
             );
             return;
         }
-        const row = await ui.pick(rows, operation);
+        const row = selectedRow ?? (await ui.pick(rows, operation));
         if (!row) return;
         if (operation !== 'answer') {
             if (
@@ -86,6 +104,7 @@ export async function record(
             await ledger.complete(row, operation);
             ui.info(
                 `${row.id} の${operation === 'complete' ? '完了' : 'キック済み'}を台帳へ記録しました`,
+                'success',
             );
             return;
         }
@@ -144,10 +163,10 @@ export async function record(
         await drafts.set(key, pending);
         await ledger.answer(pending);
         await drafts.set(key, undefined);
-        ui.info(`${row.id} の回答原文と完了を台帳へ記録しました`);
+        ui.info(`${row.id} の回答原文と完了を台帳へ記録しました`, 'success');
     } catch (error) {
         if (error instanceof OperationPending) {
-            ui.info(error.message);
+            ui.info(error.message, 'pending');
             return;
         }
         ui.error(

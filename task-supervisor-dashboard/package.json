@@ -1,8 +1,8 @@
 {
     "name": "task-supervisor-dashboard",
     "displayName": "Task Supervisor",
-    "description": "Markdownを編集せず、監督の依頼の完了・キック済み・回答を台帳へ記録する",
-    "version": "0.1.1",
+    "description": "監督台帳の依頼・タスク・通知を一覧表示し、行から完了・キック済み・回答を記録する",
+    "version": "0.2.0",
     "publisher": "xxxaz",
     "license": "MIT",
     "repository": {
@@ -29,6 +29,18 @@
     "contributes": {
         "commands": [
             {
+                "command": "xxxaz.task-supervisor.open",
+                "title": "進行中タスクの一覧を開く",
+                "category": "Task Supervisor",
+                "icon": "$(open-in-editor)"
+            },
+            {
+                "command": "xxxaz.task-supervisor.refresh",
+                "title": "一覧を更新する",
+                "category": "Task Supervisor",
+                "icon": "$(refresh)"
+            },
+            {
                 "command": "xxxaz.task-supervisor.complete",
                 "title": "依頼を完了にする（結果確認 OK）",
                 "category": "Task Supervisor"
@@ -48,7 +60,7 @@
             "explorer": [
                 {
                     "id": "xxxaz.task-supervisor.actions",
-                    "name": "監督の操作",
+                    "name": "監督の一覧",
                     "type": "webview"
                 }
             ]
@@ -75,20 +87,38 @@
                     "description": "TypeScriptを直接実行できるNode 24以降のパス。ローカルで試す場合も設定できます。"
                 }
             }
+        },
+        "menus": {
+            "view/title": [
+                {
+                    "command": "xxxaz.task-supervisor.open",
+                    "when": "view == xxxaz.task-supervisor.actions",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "xxxaz.task-supervisor.refresh",
+                    "when": "view == xxxaz.task-supervisor.actions",
+                    "group": "navigation@2"
+                }
+            ]
         }
     },
     "scripts": {
         "typecheck": "tsc --noEmit",
         "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/run.ts",
         "prebuild": "npm run typecheck && npm test",
-        "build": "node esbuild.config.mjs",
-        "package": "npm run build && vsce package --out dist/task-supervisor-dashboard.vsix"
+        "build": "node esbuild.config.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/bundle-smoke.ts",
+        "package": "npm run build && vsce package --out dist/task-supervisor-dashboard.vsix",
+        "preview": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/preview.ts",
+        "test:board-parity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/board-parity.ts"
     },
     "devDependencies": {
+        "@types/jsdom": "^21.1.7",
         "@types/node": "^25.8.0",
         "@types/vscode": "~1.85.0",
         "@vscode/vsce": "^3.0.0",
         "esbuild": "^0.28.0",
+        "jsdom": "^26.1.0",
         "typescript": "^6.0.3"
     }
 }

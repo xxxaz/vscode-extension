@@ -1,17 +1,176 @@
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { realpath, stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { type Interaction, record } from './actions.ts';
 import { captureAnswer } from './answerEditor.ts';
 import { createGateway } from './backend.ts';
 import type { Operation } from './boardClient.ts';
+import { BoardFeed } from './boardFeed.ts';
+import {
+    findBoardLink,
+    hasBoardOperation,
+    parseBoardMessage,
+    resolveBoardTarget,
+} from './boardHost.ts';
+import { BOARD_FILES, BoardReader } from './boardReader.ts';
+import type { BoardUpdate } from './dashboardTypes.ts';
+import { boardHtml } from './dashboardWebview.ts';
 
 export function activate(context: vscode.ExtensionContext): void {
     let busy = false;
-    let view: vscode.WebviewView | undefined;
-    const status = (message: string, failed = false): void => {
-        void view?.webview.postMessage({ message, failed });
+    type Entry = {
+        folder: vscode.WorkspaceFolder;
+        feed: BoardFeed;
+        views: number;
     };
-    const perform = async (operation: Operation): Promise<void> => {
+    const entries = new Map<string, Promise<Entry>>();
+    const panels = new Map<string, vscode.WebviewPanel>();
+    let lastStatus: Extract<BoardUpdate, { type: 'status' }> = {
+        type: 'status',
+        message: '一覧の依頼から操作できます。',
+        state: 'info',
+    };
+    const status = (
+        message: string,
+        failed = false,
+        state: 'info' | 'pending' | 'success' | 'error' = failed
+            ? 'error'
+            : 'info',
+    ): void => {
+        lastStatus = { type: 'status', message, failed, state, busy };
+        for (const entry of entries.values())
+            void entry.then((e) => e.feed.publish(lastStatus));
+    };
+    const folders = () =>
+        vscode.workspace.workspaceFolders?.filter(
+            (f) => f.uri.scheme === 'file',
+        ) ?? [];
+    const chooseFolder = async () =>
+        folders().length === 1
+            ? folders()[0]
+            : vscode.window.showWorkspaceFolderPick();
+    const gatewayFor = async (folder: vscode.WorkspaceFolder) => {
+        const config = vscode.workspace.getConfiguration(
+            'taskSupervisor',
+            folder.uri,
+        );
+        const nodePath = config.get<string>('nodePath');
+        const boardPath = config.get<string>('boardPath');
+        const runtimeCliPath = config.get<string>('runtimeCliPath');
+        if (!nodePath || !boardPath || !runtimeCliPath)
+            throw new Error('NodeとCLIのパスをマシン設定で確認してください');
+        return createGateway(
+            folder.uri.fsPath,
+            nodePath,
+            boardPath,
+            runtimeCliPath,
+            {
+                get: (key) => context.workspaceState.get(key),
+                set: async (key, value) => {
+                    await context.workspaceState.update(key, value);
+                },
+            },
+        );
+    };
+    const entryFor = (folder: vscode.WorkspaceFolder): Promise<Entry> => {
+        const root = folder.uri.fsPath;
+        const existing = entries.get(root);
+        if (existing) return existing;
+        const promise = (async () => {
+            let repoUrl: string | undefined;
+            try {
+                const remote = (
+                    await promisify(execFile)(
+                        'git',
+                        ['config', '--get', 'remote.origin.url'],
+                        {
+                            cwd: root,
+                            encoding: 'utf8',
+                            timeout: 10000,
+                            maxBuffer: 16384,
+                        },
+                    )
+                ).stdout.trim();
+                const value = new URL(
+                    remote.replace(/^git@([^:]+):/, 'https://$1/'),
+                );
+                if (value.protocol === 'https:' || value.protocol === 'http:') {
+                    value.username = '';
+                    value.password = '';
+                    repoUrl = value.href
+                        .replace(/\.git\/?$/, '')
+                        .replace(/\/$/, '');
+                }
+            } catch {
+                /* Gitの観測URLが無ければ事実にあるリンクだけを表示する。 */
+            }
+            const reader = new BoardReader(root, {
+                gateway: () => gatewayFor(folder),
+                authoritySeen: () =>
+                    !!context.workspaceState.get(
+                        `taskSupervisor.authority:${root}`,
+                    ),
+                repoUrl,
+            });
+            const entry: Entry = {
+                folder,
+                views: 0,
+                feed: new BoardFeed(async () => ({
+                    ...(await reader.read()),
+                    workspace: folder.name,
+                })),
+            };
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(
+                    folder,
+                    '.agents/ローカルタスク/監督/**',
+                ),
+            );
+            const changed = (uri: vscode.Uri) => {
+                if (
+                    entry.views > 0 &&
+                    BOARD_FILES.some(
+                        (path) => resolve(root, path) === uri.fsPath,
+                    )
+                )
+                    entry.feed.request();
+            };
+            context.subscriptions.push(
+                watcher,
+                watcher.onDidCreate(changed),
+                watcher.onDidChange(changed),
+                watcher.onDidDelete(changed),
+                { dispose: () => entry.feed.dispose() },
+            );
+            return entry;
+        })();
+        entries.set(root, promise);
+        return promise;
+    };
+    const perform = async (
+        operation: Operation,
+        target?: {
+            folder: vscode.WorkspaceFolder;
+            id: string;
+            revision: string;
+        },
+    ): Promise<void> => {
+        if (
+            target &&
+            !folders().some(
+                (folder) =>
+                    folder.uri.toString() === target.folder.uri.toString(),
+            )
+        ) {
+            status(
+                '対象のワークスペースが閉じられました。一覧を開き直してください',
+                true,
+            );
+            return;
+        }
         if (!vscode.workspace.isTrusted) {
             void vscode.window.showErrorMessage(
                 '信頼したワークスペースで実行してください',
@@ -28,42 +187,12 @@ export function activate(context: vscode.ExtensionContext): void {
         status('操作中…');
         let reported = false;
         try {
-            const folders =
-                vscode.workspace.workspaceFolders?.filter(
-                    (f) => f.uri.scheme === 'file',
-                ) ?? [];
-            const folder =
-                folders.length === 1
-                    ? folders[0]
-                    : await vscode.window.showWorkspaceFolderPick();
+            const folder = target?.folder ?? (await chooseFolder());
             if (!folder) {
                 status('操作を取り消しました');
                 return;
             }
-            const root = folder.uri.fsPath;
-            const config = vscode.workspace.getConfiguration(
-                'taskSupervisor',
-                folder.uri,
-            );
-            const nodePath = config.get<string>('nodePath');
-            const boardPath = config.get<string>('boardPath');
-            const runtimeCliPath = config.get<string>('runtimeCliPath');
-            if (!nodePath || !boardPath || !runtimeCliPath)
-                throw new Error(
-                    'NodeとCLIのパスをマシン設定で確認してください',
-                );
-            const gateway = await createGateway(
-                root,
-                nodePath,
-                boardPath,
-                runtimeCliPath,
-                {
-                    get: (key) => context.workspaceState.get(key),
-                    set: async (key, value) => {
-                        await context.workspaceState.update(key, value);
-                    },
-                },
-            );
+            const gateway = await gatewayFor(folder);
             const ui: Interaction = {
                 pick: async (actions, op) =>
                     (
@@ -152,9 +281,9 @@ export function activate(context: vscode.ExtensionContext): void {
                         { modal: true, detail },
                         '記録する',
                     )) === '記録する',
-                info: (message) => {
+                info: (message, state = 'info') => {
                     reported = true;
-                    status(message);
+                    status(message, false, state);
                     void vscode.window.showInformationMessage(message);
                 },
                 error: (message) => {
@@ -163,12 +292,18 @@ export function activate(context: vscode.ExtensionContext): void {
                     void vscode.window.showErrorMessage(message);
                 },
             };
-            await record(operation, gateway, ui, {
-                get: (key) => context.workspaceState.get(key),
-                set: async (key, value) => {
-                    await context.workspaceState.update(key, value);
+            await record(
+                operation,
+                gateway,
+                ui,
+                {
+                    get: (key) => context.workspaceState.get(key),
+                    set: async (key, value) => {
+                        await context.workspaceState.update(key, value);
+                    },
                 },
-            });
+                target,
+            );
         } catch (error) {
             reported = true;
             const message = `操作を開始できませんでした: ${String(error)}`;
@@ -177,6 +312,12 @@ export function activate(context: vscode.ExtensionContext): void {
         } finally {
             busy = false;
             if (!reported) status('記録を取り消しました');
+            else
+                status(lastStatus.message, lastStatus.failed, lastStatus.state);
+            for (const entry of entries.values())
+                void entry.then((e) => {
+                    if (e.views > 0) e.feed.request();
+                });
         }
     };
     for (const operation of ['complete', 'ran', 'answer'] as const)
@@ -186,38 +327,181 @@ export function activate(context: vscode.ExtensionContext): void {
                 () => perform(operation),
             ),
         );
+    const attach = async (
+        owner: vscode.WebviewPanel | vscode.WebviewView,
+        folder: vscode.WorkspaceFolder,
+    ): Promise<void> => {
+        if (!vscode.workspace.isTrusted)
+            throw new Error('信頼したワークスペースで一覧を開いてください');
+        const entry = await entryFor(folder);
+        const webview = owner.webview;
+        const subscriptions: vscode.Disposable[] = [];
+        let closed = false;
+        entry.views++;
+        const send = (message: BoardUpdate) => {
+            if (!closed) void webview.postMessage(message);
+        };
+        const unsubscribe = entry.feed.subscribe(send);
+        subscriptions.push(
+            owner.onDidDispose(() => {
+                closed = true;
+                entry.views--;
+                unsubscribe();
+                for (const subscription of subscriptions)
+                    subscription.dispose();
+            }),
+        );
+        subscriptions.push(
+            webview.onDidReceiveMessage((value: unknown) => {
+                void (async () => {
+                    const message = parseBoardMessage(value);
+                    if (!message) return;
+                    if (message.type === 'ready') {
+                        entry.feed.replay(send);
+                        send(lastStatus);
+                        entry.feed.request();
+                    } else if (message.type === 'refresh') {
+                        await entry.feed.refresh();
+                    } else if (message.type === 'operation') {
+                        if (
+                            !entry.feed.current ||
+                            !hasBoardOperation(entry.feed.current, message)
+                        )
+                            throw new Error(
+                                '一覧の依頼が変わりました。最新の行を確認してください',
+                            );
+                        await perform(message.operation, {
+                            folder,
+                            id: message.id,
+                            revision: message.revision,
+                        });
+                    } else if (message.type === 'open') {
+                        const link =
+                            entry.feed.current &&
+                            findBoardLink(entry.feed.current, message.linkId);
+                        if (!link)
+                            throw new Error(
+                                'このリンクは現在の一覧にありません',
+                            );
+                        const target = resolveBoardTarget(
+                            folder.uri.fsPath,
+                            link.target,
+                        );
+                        if ('external' in target)
+                            await vscode.env.openExternal(
+                                vscode.Uri.parse(target.external),
+                            );
+                        else {
+                            const base = await realpath(folder.uri.fsPath);
+                            const path = await realpath(target.file);
+                            const rel = relative(base, path);
+                            if (
+                                rel === '..' ||
+                                rel.startsWith('../') ||
+                                isAbsolute(rel)
+                            )
+                                throw new Error(
+                                    'リンク先がワークスペース外を指しています',
+                                );
+                            const uri = vscode.Uri.file(path);
+                            if ((await stat(path)).isDirectory())
+                                await vscode.commands.executeCommand(
+                                    'revealInExplorer',
+                                    uri,
+                                );
+                            else
+                                await vscode.window.showTextDocument(
+                                    await vscode.workspace.openTextDocument(
+                                        uri,
+                                    ),
+                                    { preview: false },
+                                );
+                        }
+                    }
+                })().catch((error) =>
+                    status(
+                        `一覧の操作を開始できませんでした: ${String(error)}`,
+                        true,
+                    ),
+                );
+            }),
+        );
+        webview.options = {
+            enableScripts: true,
+            localResourceRoots: [
+                vscode.Uri.joinPath(context.extensionUri, 'dist'),
+            ],
+        };
+        webview.html = boardHtml(
+            webview.cspSource,
+            randomBytes(24).toString('hex'),
+            webview
+                .asWebviewUri(
+                    vscode.Uri.joinPath(
+                        context.extensionUri,
+                        'dist',
+                        'dashboard.js',
+                    ),
+                )
+                .toString(),
+        );
+        await entry.feed.refresh();
+    };
+    context.subscriptions.push(
+        vscode.commands.registerCommand(
+            'xxxaz.task-supervisor.open',
+            async () => {
+                try {
+                    const folder = await chooseFolder();
+                    if (!folder) return;
+                    const existing = panels.get(folder.uri.fsPath);
+                    if (existing) {
+                        existing.reveal();
+                        return;
+                    }
+                    const panel = vscode.window.createWebviewPanel(
+                        'xxxaz.task-supervisor.dashboard',
+                        `進行中タスク — ${folder.name}`,
+                        vscode.ViewColumn.One,
+                        { enableScripts: true, retainContextWhenHidden: true },
+                    );
+                    panels.set(folder.uri.fsPath, panel);
+                    panel.onDidDispose(() => panels.delete(folder.uri.fsPath));
+                    await attach(panel, folder);
+                } catch (error) {
+                    status(`一覧を開けませんでした: ${String(error)}`, true);
+                }
+            },
+        ),
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('xxxaz.task-supervisor.refresh', () => {
+            for (const entry of entries.values())
+                void entry.then((e) => e.feed.refresh());
+        }),
+    );
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             'xxxaz.task-supervisor.actions',
             {
                 resolveWebviewView(current) {
-                    view = current;
-                    current.webview.options = {
-                        enableScripts: true,
-                        localResourceRoots: [],
-                    };
-                    const nonce = randomBytes(24).toString('hex');
-                    current.webview.html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';"><style nonce="${nonce}">body{font-family:var(--vscode-font-family);padding:12px}button{display:block;width:100%;margin:8px 0;padding:8px;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;cursor:pointer}p{white-space:pre-wrap}</style></head><body><button data-operation="complete">完了（結果確認 OK）</button><button data-operation="ran">キック済み</button><button data-operation="answer">判断に回答（推奨・自由記述）</button><p id="status" role="status">操作を選ぶと未完了の依頼を表示します。Markdownへは書き戻しません。</p><script nonce="${nonce}">const api=acquireVsCodeApi();document.querySelectorAll('button').forEach(b=>b.onclick=()=>api.postMessage({operation:b.dataset.operation}));window.addEventListener('message',e=>{document.getElementById('status').textContent=e.data.message;});</script></body></html>`;
-                    context.subscriptions.push(
-                        current.webview.onDidReceiveMessage(
-                            (message: unknown) => {
-                                if (
-                                    message &&
-                                    typeof message === 'object' &&
-                                    'operation' in message &&
-                                    (message.operation === 'complete' ||
-                                        message.operation === 'ran' ||
-                                        message.operation === 'answer')
-                                )
-                                    void perform(message.operation);
-                            },
-                        ),
-                    );
-                    current.onDidDispose(() => {
-                        if (view === current) view = undefined;
+                    const folder = folders()[0];
+                    if (!folder) {
+                        current.webview.html =
+                            '<p>監督台帳のあるフォルダーを開いてください。</p>';
+                        return;
+                    }
+                    current.description = folder.name;
+                    void attach(current, folder).catch((error) => {
+                        status(
+                            `一覧を開けませんでした: ${String(error)}`,
+                            true,
+                        );
+                        void vscode.window.showErrorMessage(String(error));
                     });
                 },
             },
+            { webviewOptions: { retainContextWhenHidden: true } },
         ),
     );
 }

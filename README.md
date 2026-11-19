@@ -10,14 +10,14 @@
 ## 同梱拡張
 
 - [`rendered-markdown-diff`](./rendered-markdown-diff/) — `*.md` の default editor。
-    レンダリング表示と HEAD / 対向との差分ハイライト、タブ右上アイコンでテキスト
-    ↔ ビューワー切替。拡張を無効化すると通常の text editor に戻る
+  レンダリング表示と HEAD / 対向との差分ハイライト、タブ右上アイコンでテキスト
+  ↔ ビューワー切替。拡張を無効化すると通常の text editor に戻る
 - [`git-commit-browser`](./git-commit-browser/) — 任意のエディタ上のコミット参照
-    (実在検証済み bare SHA / GitHub・GitLab の commit・blob URL) をクリック可能にし、
-    変更ファイル一覧・前後コミットを辿るコミットブラウザを開く
+  (実在検証済み bare SHA / GitHub・GitLab の commit・blob URL) をクリック可能にし、
+  変更ファイル一覧・前後コミットを辿るコミットブラウザを開く
 
-- [`task-supervisor-dashboard`](./task-supervisor-dashboard/) — コマンドと最小ビューから
-    監督の依頼の完了・キック済み・回答を台帳へ直接記録する
+- [`task-supervisor-dashboard`](./task-supervisor-dashboard/) — 監督の依頼・タスク・お知らせを一覧表示し、
+  各行から完了・キック済み・回答を台帳へ直接記録する
 
 詳細は各ディレクトリの `README.md` を参照。
 
@@ -130,7 +130,7 @@ vscode.window.tabGroups.onDidChangeTabs((event) => {
 
 git コマンド呼び出しで `` git show `HEAD:${path}` `` のようなテンプレートリテラルを
 シェルに渡すと、ファイル名にメタ文字があるリポジトリで command injection になる。
-必ず `` execFile('git', ['show', `HEAD:${path}`]) `` の **配列形式** で呼ぶこと。
+必ず ``execFile('git', ['show', `HEAD:${path}`])`` の **配列形式** で呼ぶこと。
 
 ### `engines.vscode` は実機 VS Code の version を確認してから決める
 

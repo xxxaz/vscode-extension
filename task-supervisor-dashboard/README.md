@@ -1,76 +1,97 @@
 # Task Supervisor
 
-未完了の依頼を選び、完了・キック済み・判断の回答を監督台帳へ直接記録します。Markdownのチェックを編集しないため、ファイルの再生成と保存が競合しません。
-更新日: 2026-11-19。初回配布版は0.1.1です。
+監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。Markdownへは書き戻しません。
+更新日: 2026-11-19。
 
-## 操作
+## 一覧を開く
 
-コマンドパレットの「Task Supervisor」から、次の操作を選びます。エクスプローラー内の「監督の操作」ビューにも同じボタンがあります。
+コマンドパレットで **Task Supervisor: 進行中タスクの一覧を開く** を実行します。エクスプローラーの **監督の一覧** にも同じ内容を表示します。サイドバー右上の「一覧を開く」で広いエディター領域へ移れます。
 
-- **依頼を完了にする（結果確認 OK）**: 未完了の実行依頼を選び、本文とコマンドを確認して記録します。結果確認が必要な依頼には `done --ok` を使います。
-- **依頼をキック済みにする**: 実行済みの事実だけを `ran` で記録します。一般の実行依頼にも対応したCLIが必要です。古いCLIが `needsOk` のない依頼を拒否した場合は、未保存のエラーを表示します。
-- **判断に回答する（推奨・自由記述）**: 判断依頼と資料の版を確認します。「推奨で進める」または自由記述と回答者を入力し、原文と完了を `answer` で一度に保存します。自由記述は開いた無題のテキストへ入力し、通知の「回答を確認」を押します。複数行と前後の空白をエディターの原文として読み取ります。ファイル保存は不要です。
+先頭に更新時刻・件数・監督へのリンクと区分の案内を表示します。検索はID・本文・状態・詳細を対象にします。行は要約を表示し、開くと全文と関連情報が見られます。
 
-保存後は台帳を再取得します。成功・失敗はVS Codeの通知とビュー内へ表示します。依頼のコマンドを実行する機能ではありません。取消では記録しません。
-保留・前提未完了・取り下げ済み・完了済みの依頼は選択候補から外します。判断を完了印だけで閉じる操作は提供しません。
+- 実行待ち・判断待ち: 優先度、ID、タスク、依頼全文、コマンド、依頼日時、資料、推奨回答。
+- 保留・前提待ち、実行済みで結果確認待ち: 理由と前提、実行の記録を区別します。
+- 進行中・保留中・完了済み・アーカイブのタスク: 状態と補足、Jira、ブランチ、PR、WT、セッション、関連、メモ。
+- 監督のお知らせ、取得できなかった情報、直近20件の出来事。
 
-回答を保存できなかった場合は原文・回答者・操作IDをVS Codeのワークスペース状態に保持します。再度「判断に回答する」で保存済みか確認したうえで、同じ内容の再送または依頼を確認して再入力できます。新しい入力を確定するまで前の原文は保持します。
-入力中の回答に新しい依頼版を自動で付け直しません。URL資料の版は利用者が確認した改訂番号などを入力します。URLの内容の取得や更新検知は行いません。
+タスクのリンクは一覧内の該当行を開きます。Jira・PR・セッションのリンクは対応するアプリ、資料はワークスペース内のファイルを開きます。ブランチやCodexの再開コマンドを勝手に実行しません。
 
-この版は操作専用です。タスク一覧の常時表示・ファイル監視・差分描画は次の版で扱います。
+台帳の4原票と常駐部の表示用ファイルを監視します。変更行のDOMだけを更新し、スクロール・開いた行・検索・フォーカスを保ちます。行が「実行待ち」から「結果確認待ち」へ移っても同じカードを使います。取得失敗では前の表示と更新時刻を残して警告します。
+
+## 行から操作する
+
+依頼の行を開くと、その状態で使える操作だけが表示されます。コマンドパレットの従来の3操作も使えます。
+
+- **完了（結果確認 OK）**: 依頼と実行結果を確認して記録します。結果確認が必要なら `done --ok` を使います。
+- **キック済み**: 実行の事実を `ran` で記録し、結果確認待ちを完了と混同しません。
+- **判断に回答**: 「推奨で進める」または自由記述と回答者を保存します。自由記述は開いた無題テキストへ入力し、通知の「回答を確認」を押します。改行と前後の空白を原文として取得し、ディスクへの保存は不要です。
+
+操作前に確認画面を出します。一覧の表示後に依頼が変われば拒否し、別の依頼へ付け替えません。保留・前提未完了・取り下げ・完了済みは操作候補から除きます。回答を完了印だけで代用しません。
+
+保存成功・失敗・受付済み結果待ちを区別して表示します。未保存回答や結果不明の操作は、原文と同じ操作IDをワークスペース状態に保持します。次の操作で保存済みか照会し、必要なら同じ内容・IDで再送します。
+
+## 読取りと常駐部への接続
+
+読取り元は `.agents/ローカルタスク/監督/` の `registry.json`、`events.jsonl`、`state.json`、`archive.json` です。生成Markdownの表を解析しません。分類・並び・補足は `board.ts` のregistry/render/narrativeの規則に合わせます。`test:board-parity` は正本の公開関数を直接読み、実台帳で一致を確認する補助です。
+
+操作UIは `ActionGateway` を使います。切替前は既存CLI、`runtime/authority.json` が `authoritative` なら常駐CLIへ接続します。`preparing`・破損・観測済みの切替記録の消失は拒否し、常駐部の停止や未対応を理由に旧CLIへ戻りません。切替後の一覧も常駐部の `snapshot.json` を正本にします。heartbeatが古ければ参考表示と明示します。
+
+常駐経路は選択時のタスク版と回答contextの版を固定し、型付きの `action.complete`・`action.executed`・`action.answer` を `submit` へ渡します。`capabilities` に対象操作がない場合は送信前に拒否します。受付の `queued` と適用済み、担当の受領・処理完了は別の状態です。結果はCLI返却の対象ルート内のパスから読み、拡張はSQLiteを開きません。
+
+常駐部の業務書込み公開後の実結合・実運用切替は別途必要です。未対応の段階で切り替えないでください。切替前の旧CLIには、完了・キック済みの原子的な版照合や永続的な操作IDの重複排除がありません。保存前の再読取りと保存後の読戻しで確認します。
 
 ## 必要な環境
 
-信頼したローカルワークスペースで使います。常駐部への切替前は、ルートの `.agents/ローカルタスク/監督/registry.json` を読みます。
-拡張はワークスペース側で動作します。DevContainerへ接続した場合はDevContainer内でCLIを実行します。
+信頼したローカルワークスペースを使います。拡張はワークスペース側で動き、DevContainer接続中はDevContainer内でCLIを呼びます。Dockerを使う実行経路はありません。
 
-- `taskSupervisor.nodePath`: TypeScriptを直接実行できるNode 24以降。初期値は `/usr/local/bin/node` です。手元のVS Codeで試す場合はローカルのNodeのパスをマシン設定へ指定してください。
-- `taskSupervisor.boardPath`: 信頼した共通 `board.ts` のルート相対パス。初期値は `.claude/worktrees/supervisor-watch/.agents/skills/task-supervisor/board.ts` です。
-- `taskSupervisor.runtimeCliPath`: 契約v1の常駐受付CLI。初期値は `.agents/skills/task-supervisor/runtime/cli.ts` です。
+マシン設定:
 
-子プロセスの `CLAUDE_PROJECT_DIR` は選択したルートへ固定します。別の台帳へ書き込まないよう、表示と記録のルートを一致させます。
-回答には `answer-context` と `answer` に対応したCLIが必要です。古いCLIでは回答を保存せずエラーにします。回答を `done` や `edit --text` で代用しません。
-完了・キック済みは既存CLIの検証を再利用します。保存前に依頼を読み直しますが、旧CLIには原子的な版照合・永続的な操作IDの重複排除がありません。
-回答の版照合と同一IDの再送制御は回答CLIが行います。
+- `taskSupervisor.nodePath`: TypeScriptを直接実行できるNode 24以降。初期値 `/usr/local/bin/node`。
+- `taskSupervisor.boardPath`: 信頼した共通board CLI。初期値 `.claude/worktrees/supervisor-watch/.agents/skills/task-supervisor/board.ts`。
+- `taskSupervisor.runtimeCliPath`: 契約v1の常駐受付。初期値 `.agents/skills/task-supervisor/runtime/cli.ts`。
 
-## 常駐部への切替
+子プロセスの `CLAUDE_PROJECT_DIR` は選択したルートに固定します。自由回答には `answer-context`/`answer`、一般の実行依頼のキック済みには対応したCLIが必要です。古いCLIの拒否は成功にしません。
 
-操作UIは共通の `ActionGateway` を使います。`runtime/authority.json` がない切替前は既存CLI、`authoritative` では常駐CLIへ接続します。`preparing`・記録破損・一度観測した切替記録の消失では変更を拒否します。常駐CLIの停止や未対応を理由に既存CLIへ自動で戻りません。
-
-常駐経路はスナップショットのタスク版を選択時に固定し、`action.complete`・`action.executed`・`action.answer` を型付きの封筒で `submit` へ渡します。回答は `answer-context` が同時に返す依頼版とタスク版を照合します。入力後の版を自動で付け替えません。
-
-操作ID・原文・受付結果をワークスペース状態へ保持します。「受付済み・適用結果待ち」は成功と区別して表示し、次の操作時に同じIDの結果を確認します。受付前の通信失敗も同じ内容・IDで再送します。適用済みは担当の受領・処理完了とは別です。結果ファイルはCLIが返した対象ルート内のパスだけを読み、SQLiteを直接開きません。
-
-常駐部の `capabilities` に対象操作と `authoritativeWrites: true` がそろうまでは送信しません。接続用の隔離試験は実施していますが、常駐部の業務操作と `answer-context` の公開・結合試験は別途必要です。未対応の段階で実運用へ切り替えないでください。
-
-## ビルドと配布
+## ビルド・画面確認・手動導入
 
 ```sh
 npm ci
 npm run package
+npm run preview
 ```
 
-`dist/task-supervisor-dashboard.vsix` を生成します。`package` は型検査とテストを実行します。
-DevContainerの構成へ入れる前に、手元のVS Codeで「拡張機能: VSIXからのインストール」または `code --install-extension <VSIXのパス> --force` を使って確認できます。
-NodeとCLIのマシン設定を、そのVS Codeを動かしている環境のパスへ合わせてください。
+`package` は型検査・テスト・バンドル生成・配布HTMLと配布JSの接続検査を実行し、`dist/task-supervisor-dashboard.vsix` を作ります。プレビューはローカルのサンプル台帳を使い、操作を書き込みません。`npm run preview -- <workspace-root> --port=8875` で実台帳の読取り表示も確認できます。外部通信はありません。
 
-CIは既存の拡張と同じmatrixで型検査・テスト・VSIX生成を行います。`task-supervisor-dashboard-v0.1.1` タグで既存Release workflowが `task-supervisor-dashboard-0.1.1.vsix` を配布します。タグのpush・公開は開発者が行います。
-コンテナへの導入は公開済みReleaseの取得をDockerfileに宣言し、標準のコンテナ再作成で行います。
+正本との照合は次で実行します（外部リポジトリのためCIではなく、対象ワークスペースで行います）。
+
+```sh
+npm run test:board-parity -- <task-supervisorのディレクトリ> <workspace-root>
+```
+
+手動導入では、VS Codeを動かす環境の端末で次を実行します。コンテナの構成へ入れる前にもVSIXから試せます。
+
+```sh
+code --install-extension <task-supervisor-dashboard-0.2.0.vsixのパス> --force
+```
+
+導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 進行中タスクの一覧を開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
+
+既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.2.0` タグでRelease workflowが `task-supervisor-dashboard-0.2.0.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
 
 ## 実装の配置
 
-| ファイル                  | 責務                                            |
-| ------------------------- | ----------------------------------------------- |
-| `src/extension.ts`        | コマンド・最小ビュー・VS Codeの選択と入力・通知 |
-| `src/actions.ts`          | 操作の順序、確認、回答の保持と再送              |
-| `src/answerEditor.ts`     | 無題の原文入力と確認（ディスク保存なし）        |
-| `src/boardClient.ts`      | 台帳読取り、対象選別、固定CLI引数、結果の読戻し |
-| `src/gateway.ts`          | UIが使う操作ポートと結果待ちの型                |
-| `src/backend.ts`          | 正本の切替状態による接続先の選択                |
-| `src/runtimeGateway.ts`   | 契約v1の操作、版照合、永続IDによる復帰          |
-| `src/runtimeFiles.ts`     | 常駐CLIと投影・結果ファイルの読取り             |
-| `test/actions.test.ts`    | 確認・取消・失敗・原文・同じ操作IDの回帰検証    |
-| `test/runtime.test.ts`    | 結果待ち・切替・拒否・復帰の隔離試験            |
-| `test/cli-integration.ts` | 指定された本物の回答CLIと隔離台帳での検証補助   |
+| ファイル                                                   | 責務                                                |
+| ---------------------------------------------------------- | --------------------------------------------------- |
+| `src/extension.ts`                                         | VS Codeの入口・監視・一覧と操作の接続               |
+| `src/boardReader.ts`                                       | 4原票と常駐正本の読取り・整合確認                   |
+| `src/boardModel.ts`                                        | 分類・並び・全表示項目の純粋な投影                  |
+| `src/boardFeed.ts`                                         | 更新の集約・直列読取り・失敗時の表示保持            |
+| `src/dashboardTypes.ts`                                    | 表示データと固定メッセージの契約                    |
+| `src/dashboardClient.ts`                                   | キー付きDOMの差分更新と状態保持                     |
+| `src/dashboardWebview.ts` / `dashboardEntry.ts`            | テーマとCSP・バンドル入口                           |
+| `src/actions.ts` / `answerEditor.ts`                       | 確認と原文入力・行指定・回答の保持                  |
+| `src/boardClient.ts` / `gateway.ts`                        | 既存台帳CLIと共通の操作ポート                       |
+| `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts` | 正本選択・契約v1操作・結果の照会                    |
+| `test/`                                                    | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー |
 
-台帳の本文はVS Codeの文字列項目として表示します。ビューのCSPはnonceを持つ固定スクリプトだけを許可します。Webviewからは固定の操作名だけを受け取り、任意のCLIコマンドを実行しません。
+本文はテキストノードとして表示し、Webviewから実行ファイル・任意のCLI引数・任意URLを受け付けません。リンクも現在の表示にあるIDから解決します。CSPはnonce付きの固定スクリプトとCSSに限定します。
