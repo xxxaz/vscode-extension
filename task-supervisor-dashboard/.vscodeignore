@@ -1,0 +1,7 @@
+src/**
+test/**
+node_modules/**
+tsconfig.json
+esbuild.config.mjs
+package-lock.json
+dist/*.vsix

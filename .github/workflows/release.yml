@@ -20,6 +20,7 @@ on:
         tags:
             - 'rendered-markdown-diff-v*'
             - 'git-commit-browser-v*'
+            - 'task-supervisor-dashboard-v*'
 
 permissions:
     contents: write   # GitHub Release 作成・アセット upload
@@ -48,6 +49,10 @@ jobs:
                       git-commit-browser-v*)
                           EXT="git-commit-browser"
                           VERSION="${TAG#git-commit-browser-v}"
+                          ;;
+                      task-supervisor-dashboard-v*)
+                          EXT="task-supervisor-dashboard"
+                          VERSION="${TAG#task-supervisor-dashboard-v}"
                           ;;
                       *)
                           echo "::error::unknown tag format: $TAG"

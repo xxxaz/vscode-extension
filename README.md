@@ -16,6 +16,9 @@
     (実在検証済み bare SHA / GitHub・GitLab の commit・blob URL) をクリック可能にし、
     変更ファイル一覧・前後コミットを辿るコミットブラウザを開く
 
+- [`task-supervisor-dashboard`](./task-supervisor-dashboard/) — コマンドと最小ビューから
+    監督の依頼の完了・キック済み・回答を台帳へ直接記録する
+
 詳細は各ディレクトリの `README.md` を参照。
 
 ## ディレクトリ構成
