@@ -650,3 +650,80 @@ test('事実がないJiraとPRは既定URLを使い、既存イベントのリ�
     );
     assert.equal(new Set(cards(before, 'events').map((c) => c.id)).size, 2);
 });
+
+test('多数タスクのイベントが交互に並んでも補足と最新記録はタスクごとの原票順を守る', () => {
+    const tasks = Array.from({ length: 80 }, (_, index) => ({
+        ...task(`T${index + 1}`),
+        statusNote: `手書き補足${index + 1}`,
+    }));
+    const events = tasks.flatMap((t) => [
+        {
+            at: 2000,
+            taskId: t.id,
+            kind: 'status',
+            text: t.statusNote,
+            by: 'ユーザー',
+        },
+        {
+            at: 10000,
+            taskId: t.id,
+            kind: 'note',
+            text: `${t.id} 時刻が大きい以前の報告`,
+            by: 'codex:test',
+            report: true,
+        },
+        {
+            at: 100,
+            taskId: t.id,
+            kind: 'status',
+            text: t.statusNote,
+            by: 'ユーザー',
+        },
+    ]);
+    for (let round = 0; round < 60; round++) {
+        for (const t of tasks)
+            events.push({
+                at: 101 + round,
+                taskId: t.id,
+                kind: 'note',
+                text: `${t.id} 原票順の報告${round}`,
+                by: 'codex:test',
+                report: true,
+            });
+    }
+    events.push({
+        at: 99999,
+        taskId: 'T999',
+        kind: 'note',
+        text: '別タスクの記録',
+        by: 'codex:test',
+        report: true,
+    });
+    const raw = input({ registry: { version: 1, tasks, actions: [] }, events });
+    const before = JSON.stringify(raw);
+    for (const e of events) Object.freeze(e);
+    Object.freeze(events);
+    const snapshot = projectBoard(raw);
+    for (const card of cards(snapshot, 'tasks')) {
+        const status = card.fields.find((f) => f.label === 'ステータス');
+        assert.ok(status);
+        assert.match(
+            status.parts[1].text,
+            new RegExp(`${card.id} 原票順の報告59$`),
+        );
+        const latest = card.fields.find((f) => f.label === '最新イベント');
+        assert.ok(latest);
+        assert.match(
+            latest.parts[0].text,
+            new RegExp(`${card.id} 原票順の報告59 \\(codex:test\\)$`),
+        );
+    }
+    assert.deepEqual(
+        cards(snapshot, 'events').map((c) => c.summary),
+        tasks
+            .slice(-20)
+            .reverse()
+            .map((t) => `${t.id} 原票順の報告59`),
+    );
+    assert.equal(JSON.stringify(raw), before);
+});

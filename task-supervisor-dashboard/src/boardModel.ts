@@ -676,9 +676,14 @@ export function projectBoard(input: {
     warnings.push(...strings(rawFacts.warnings ?? []));
     const facts = readFacts(rawFacts, warnings),
         events: Event[] = [];
+    const eventsByTask = new Map<string, Event[]>();
     for (const raw of input.events) {
         try {
-            events.push(event(raw));
+            const parsed = event(raw);
+            events.push(parsed);
+            const taskEvents = eventsByTask.get(parsed.taskId);
+            if (taskEvents) taskEvents.push(parsed);
+            else eventsByTask.set(parsed.taskId, [parsed]);
         } catch {
             warnings.push('イベントの形式が不正なため表示できない行があります');
         }
@@ -797,13 +802,14 @@ export function projectBoard(input: {
     const taskCard = (t: Task): BoardCard => {
         const prefix = `task/${t.id}`,
             relatedActions = live.filter((v) => v.taskId === t.id);
+        const taskEvents = eventsByTask.get(t.id) ?? [];
         const status = [
             text(`${t.status}${t.imported ? ' 🔎要確認' : ''}`),
             ...(t.status === '完了'
                 ? t.statusNote
                     ? [t.statusNote]
                     : []
-                : statusLines(t, events, facts)
+                : statusLines(t, taskEvents, facts)
             ).map(text),
         ];
         const taskOpen = open.filter((v) => v.taskId === t.id);
@@ -828,7 +834,7 @@ export function projectBoard(input: {
                 text(`アーカイブ予定 ${time(t.completedAt + 86400000)}`),
             );
         const fields: BoardField[] = [field('ステータス', ...status)];
-        const last = events.filter((e) => e.taskId === t.id).at(-1);
+        const last = taskEvents.at(-1);
         if (last)
             fields.push(
                 field(
