@@ -54,7 +54,7 @@
 - `taskSupervisor.boardPath`: 信頼した共通board CLI。初期値 `.claude/worktrees/supervisor-watch/.agents/skills/task-supervisor/board.ts`。
 - `taskSupervisor.runtimeCliPath`: 契約v1の常駐受付。初期値 `.agents/skills/task-supervisor/runtime/cli.ts`。
 
-子プロセスの `CLAUDE_PROJECT_DIR` は選択したルートに固定します。自由回答には `answer-context`/`answer`、一般の実行依頼のキック済みには対応したCLIが必要です。古いCLIの拒否は成功にしません。
+子プロセスの `CLAUDE_PROJECT_DIR` は選択したルートに固定します。自由回答には `answer-context`/`answer`、一般の実行依頼のキック済みには対応したCLIが必要です。古いCLIの拒否は成功にしません。共通一覧の全行を返せるようCLI出力のバッファ上限は1MiBから16MiBへ拡張しています。上限を超えた応答は切り詰めて表示せず、取得失敗にします。
 
 ## ビルド・画面確認・手動導入
 
@@ -81,7 +81,7 @@ code --install-extension <task-supervisor-dashboard-0.3.0.vsixのパス> --force
 
 導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 監督のダッシュボードを開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
 
-既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.3.0` タグでRelease workflowが `task-supervisor-dashboard-0.2.1.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
+既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.3.0` タグでRelease workflowが `task-supervisor-dashboard-0.3.0.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
 
 ## 実装の配置
 

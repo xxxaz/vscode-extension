@@ -32,6 +32,7 @@ async function host(mode: 'retry' | 'removed' | 'untrusted' | 'freshness') {
     const root = await mkdtemp(join(tmpdir(), 't341-panel-host-'));
     const initialTime = 1_700_000_000_000;
     let now = initialTime;
+    const generation = 'process-1';
     let timerId = 0;
     const timers = new Map<number, { callback: () => void; delay: number }>();
     const updates: BoardUpdate[] = [];
@@ -40,7 +41,6 @@ async function host(mode: 'retry' | 'removed' | 'untrusted' | 'freshness') {
         const directory = join(root, runtimeRelative);
         await mkdir(directory, { recursive: true });
         const epoch = 'epoch-1';
-        const generation = 'process-1';
         const action = {
             id: 'U1',
             text: '停止前の依頼',
@@ -262,6 +262,17 @@ async function host(mode: 'retry' | 'removed' | 'untrusted' | 'freshness') {
             now += advance;
             timer.callback();
         },
+        async writeHeartbeat(authorityError?: string) {
+            await writeFile(
+                join(root, runtimeRelative, 'heartbeat.json'),
+                JSON.stringify({
+                    schemaVersion: 1,
+                    generation,
+                    at: now,
+                    authorityError,
+                }),
+            );
+        },
         nextUpdate<T extends BoardUpdate>(
             match: (update: BoardUpdate) => update is T,
         ) {
@@ -301,55 +312,106 @@ test('実activateの監視初期化失敗から再度開くと再試行し、未
     }
 });
 
-test('ファイル通知なしの稼働期限切れを定期確認で検出し、古い行の操作を拒否する', async () => {
+for (const failure of ['稼働期限切れ', '正本の不一致'] as const) {
+    test(`ファイル通知がなくても${failure}を定期確認で検出し、古い行の操作を拒否する`, async () => {
+        const app = await host('freshness');
+        try {
+            await app.open();
+            const ready = app.updates.find(
+                (update) => update.type === 'snapshot',
+            );
+            assert.equal(ready?.type, 'snapshot');
+            assert.equal(ready.snapshot.userActions?.status, 'ready');
+            const card = ready.snapshot.sections
+                .flatMap((section) => section.cards)
+                .find((row) => row.id === 'U1');
+            assert.ok(card);
+            const operation = card.operations.find(
+                (candidate) => candidate.operation === 'complete',
+            );
+            assert.ok(operation);
+
+            const authorityError = '正本のDBと切替記録が一致しません';
+            if (failure === '正本の不一致')
+                await app.writeHeartbeat(authorityError);
+            const closed = app.nextUpdate(
+                (
+                    update,
+                ): update is Extract<BoardUpdate, { type: 'snapshot' }> =>
+                    update.type === 'snapshot' &&
+                    update.snapshot.userActions?.status === 'unavailable',
+            );
+            app.runTimer(5000, failure === '稼働期限切れ' ? 31_000 : 5_000);
+            app.runTimer(120);
+            const unavailable = await closed;
+            assert.match(
+                unavailable.snapshot.warnings.join('\n'),
+                failure === '稼働期限切れ'
+                    ? /稼働を確認できません/
+                    : /正本のDBと切替記録が一致しません/,
+            );
+            assert.equal(
+                unavailable.snapshot.userActions?.lastSuccessful?.viewVersion,
+                ready.snapshot.userActions?.viewVersion,
+            );
+            assert.equal(
+                unavailable.snapshot.updatedAt,
+                ready.snapshot.updatedAt,
+            );
+            assert.deepEqual(
+                unavailable.snapshot.sections,
+                ready.snapshot.sections,
+            );
+
+            const rejected = app.nextUpdate(
+                (update): update is Extract<BoardUpdate, { type: 'status' }> =>
+                    update.type === 'status' && update.failed === true,
+            );
+            app.panels[0].receive({
+                ...operation,
+                type: 'operation',
+                status: 'ready',
+            });
+            assert.match((await rejected).message, /一覧の依頼が変わりました/);
+            assert.equal(app.gatewayLookups, 0);
+        } finally {
+            await app.close();
+        }
+        assert.equal(app.pendingTimers, 0);
+    });
+}
+
+test('常駐部の初回読取りが失敗しても、ファイル通知なしで復旧後の一覧を取得する', async () => {
     const app = await host('freshness');
     try {
+        await app.writeHeartbeat('正本のDBと切替記録が一致しません');
         await app.open();
-        const ready = app.updates.find((update) => update.type === 'snapshot');
-        assert.equal(ready?.type, 'snapshot');
-        assert.equal(ready.snapshot.userActions?.status, 'ready');
-        const card = ready.snapshot.sections
-            .flatMap((section) => section.cards)
-            .find((row) => row.id === 'U1');
-        assert.ok(card);
-        const operation = card.operations.find(
-            (candidate) => candidate.operation === 'complete',
+        assert.equal(
+            app.updates.some((update) => update.type === 'snapshot'),
+            false,
         );
-        assert.ok(operation);
+        assert.ok(
+            app.updates.some(
+                (update) =>
+                    update.type === 'status' &&
+                    update.failed &&
+                    /正本のDBと切替記録/.test(update.message),
+            ),
+        );
 
-        const closed = app.nextUpdate(
+        await app.writeHeartbeat();
+        const recovered = app.nextUpdate(
             (update): update is Extract<BoardUpdate, { type: 'snapshot' }> =>
                 update.type === 'snapshot' &&
-                update.snapshot.userActions?.status === 'unavailable',
+                update.snapshot.userActions?.status === 'ready',
         );
-        app.runTimer(5000, 31_000);
+        app.runTimer(5000, 5000);
         app.runTimer(120);
-        const unavailable = await closed;
-        assert.match(
-            unavailable.snapshot.warnings.join('\n'),
-            /稼働を確認できません/,
-        );
-        assert.equal(
-            unavailable.snapshot.userActions?.lastSuccessful?.viewVersion,
-            ready.snapshot.userActions?.viewVersion,
-        );
-        assert.equal(unavailable.snapshot.updatedAt, ready.snapshot.updatedAt);
-
-        const rejected = app.nextUpdate(
-            (update): update is Extract<BoardUpdate, { type: 'status' }> =>
-                update.type === 'status' && update.failed === true,
-        );
-        app.panels[0].receive({
-            ...operation,
-            type: 'operation',
-            status: 'ready',
-        });
-        assert.match((await rejected).message, /一覧の依頼が変わりました/);
+        assert.equal((await recovered).snapshot.source, 'authoritative');
         assert.equal(app.gatewayLookups, 0);
     } finally {
         await app.close();
     }
-    assert.equal(app.pendingTimers, 0);
 });
 
 for (const mode of ['removed', 'untrusted'] as const) {

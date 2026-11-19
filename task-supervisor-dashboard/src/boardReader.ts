@@ -117,6 +117,10 @@ export class BoardReader {
         this.options = options;
     }
 
+    usesRuntimeSnapshot(): boolean {
+        return this.seenRuntime;
+    }
+
     async read(): Promise<BoardSnapshot> {
         for (let attempt = 0; attempt < 3; attempt++) {
             const paths = BOARD_FILES.map((path) => join(this.root, path));
@@ -218,6 +222,9 @@ export class BoardReader {
         );
         if (authority || runtimeExists || this.seenRuntime) {
             this.seenRuntime = true;
+            warnings.push(
+                '常駐部の孤立・稼働・待機・報告の詳細表示は次段階で対応します。この一覧だけで正常とは判定しません',
+            );
             if (authority) await load(`${runtimeRelative}/authority.json`);
             const raw: unknown = JSON.parse(
                 (await load(`${runtimeRelative}/snapshot.json`)) ?? '',
@@ -263,12 +270,20 @@ export class BoardReader {
                     !Number.isFinite(heartbeat.at)
                 )
                     throw new Error('常駐部の稼働記録が不正です');
+                if (
+                    typeof heartbeat.authorityError === 'string' &&
+                    heartbeat.authorityError
+                )
+                    throw new Error(
+                        `常駐部の正本を確認できません: ${heartbeat.authorityError}`,
+                    );
                 const age = Date.now() - heartbeat.at;
                 if (
                     age < 0 ||
                     age > HEARTBEAT_MAX_AGE_MS ||
                     heartbeat.generation !== raw.generation ||
-                    heartbeat.snapshotError
+                    heartbeat.snapshotError ||
+                    heartbeat.authorityError
                 )
                     throw new Error(
                         '常駐部の稼働を確認できません。稼働記録の時刻・世代・スナップショット保存結果を確認してください',

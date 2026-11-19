@@ -326,6 +326,28 @@ test('heartbeat初回不在・古い・未来・異なる世代・破損では�
     await assert.rejects(f.reader.read());
 });
 
+test('最新の稼働記録でも正本に不一致があれば保存済みスナップショットを拒否する', async (t) => {
+    const f = await runtimeFixture(t);
+    assert.equal((await f.reader.read()).userActions?.status, 'ready');
+    await f.save('runtime/heartbeat.json', {
+        schemaVersion: 1,
+        generation: f.snapshot.generation,
+        at: Date.now(),
+        authorityError: '正本のDBと切替記録が一致しません',
+    });
+    await assert.rejects(f.reader.read(), /正本のDBと切替記録が一致しません/);
+});
+
+test('常駐部の詳細が未対応であることを常駐スナップショットを読む画面に表示する', async (t) => {
+    const warning = /孤立・稼働・待機・報告.*一覧だけで正常/;
+    for (const mode of ['authoritative', 'shadow'] as const) {
+        const f = await runtimeFixture(t, mode);
+        assert.match((await f.reader.read()).warnings.join('\n'), warning);
+    }
+    const f = await fixture(t);
+    assert.doesNotMatch((await f.reader.read()).warnings.join('\n'), warning);
+});
+
 test('スナップショット取得中に置換されれば再読取りし、置換後の版を返す', async (t) => {
     const f = await runtimeFixture(t);
     let calls = 0;

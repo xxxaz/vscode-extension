@@ -165,11 +165,7 @@ export function activate(context: vscode.ExtensionContext): void {
             let disposed = false;
             const checkFreshness = () => {
                 if (disposed) return;
-                if (
-                    entry.views > 0 &&
-                    entry.feed.current &&
-                    entry.feed.current.source !== 'legacy'
-                )
+                if (entry.views > 0 && reader.usesRuntimeSnapshot())
                     entry.feed.request();
                 freshnessTimer = setTimeout(checkFreshness, 5000);
             };
