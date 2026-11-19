@@ -29,6 +29,7 @@ jobs:
                 ext:
                     - rendered-markdown-diff
                     - git-commit-browser
+                    - task-supervisor-dashboard
         defaults:
             run:
                 working-directory: ${{ matrix.ext }}
