@@ -112,7 +112,7 @@ export class Ledger implements ActionGateway {
         await this.guard();
         if (view.status === 'unavailable')
             throw new UserActionsUnavailable(view);
-        if (view.source.mode !== 'legacy' || view.source.epoch !== null)
+        if (view.source.mode === 'authoritative' || view.source.epoch !== null)
             throw new Error(
                 '共通一覧の正本が変わりました。旧CLIへ変更しません',
             );
@@ -238,15 +238,39 @@ export function boardRunner(
     boardPath: string,
 ): (args: string[]) => Promise<string> {
     const exec = promisify(execFile);
-    return async (args) =>
-        (
-            await exec(nodePath, [boardPath, ...args], {
-                cwd: root,
-                // biome-ignore lint/style/noProcessEnv: 拡張のCLI境界でホストの実行環境を継承し対象ルートだけ固定する。
-                env: { ...process.env, CLAUDE_PROJECT_DIR: root },
-                encoding: 'utf8',
-                timeout: 120000,
-                maxBuffer: 16 * 1024 * 1024,
-            })
-        ).stdout;
+    return async (args) => {
+        try {
+            return (
+                await exec(nodePath, [boardPath, ...args], {
+                    cwd: root,
+                    // biome-ignore lint/style/noProcessEnv: 拡張のCLI境界でホストの実行環境を継承し対象ルートだけ固定する。
+                    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+                    encoding: 'utf8',
+                    timeout: 120000,
+                    maxBuffer: 16 * 1024 * 1024,
+                })
+            ).stdout;
+        } catch (error) {
+            if (
+                args.length === 2 &&
+                args[0] === 'user-actions' &&
+                args[1] === '--json' &&
+                error instanceof Error &&
+                'code' in error &&
+                error.code === 1 &&
+                'stdout' in error &&
+                typeof error.stdout === 'string'
+            ) {
+                let view: UserActionsView;
+                try {
+                    view = parseUserActionsView(JSON.parse(error.stdout));
+                } catch {
+                    throw error;
+                }
+                if (view.status === 'unavailable')
+                    throw new UserActionsUnavailable(view);
+            }
+            throw error;
+        }
+    };
 }

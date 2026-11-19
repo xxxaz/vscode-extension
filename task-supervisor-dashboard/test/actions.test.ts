@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,12 +7,16 @@ import { type Interaction, record } from '../src/actions.ts';
 import { captureAnswer } from '../src/answerEditor.ts';
 import {
     type Action,
+    boardRunner,
     candidates,
     Ledger,
     type PendingAnswer,
     type Registry,
 } from '../src/boardClient.ts';
-import type { UserActionRow } from '../src/userActionsView.ts';
+import {
+    type UserActionRow,
+    UserActionsUnavailable,
+} from '../src/userActionsView.ts';
 import {
     actionable,
     awaitingResult,
@@ -289,6 +293,89 @@ test('操作一覧は共通read CLIの応答から読み取る', async () => {
     assert.equal(candidate.id, rows[0].id);
     assert.equal(candidate.text, rows[0].action.text);
     assert.deepEqual(candidates(registry, 'complete'), [candidate]);
+});
+test('切替記録がない公式CLIのshadow応答を操作候補へ渡す', async () => {
+    const row = decisionRow();
+    const view = readyView([row]);
+    const ledger = new Ledger('/fixture', async () =>
+        JSON.stringify({
+            ...view,
+            source: { ...view.source, mode: 'shadow' },
+        }),
+    );
+    const registry = await ledger.read();
+    assert.equal(registry.userActions?.source.mode, 'shadow');
+    assert.deepEqual(
+        candidates(registry, 'answer').map(({ id }) => id),
+        [row.id],
+    );
+});
+test('旧経路でauthoritativeや世代付きの共通応答を取得したら操作を開始しない', async () => {
+    await using f = await setup(resultRow());
+    const view = await f.readView();
+    for (const [mode, epoch] of [
+        ['authoritative', null],
+        ['shadow', 'epoch-1'],
+        ['legacy', 'epoch-1'],
+    ] as const) {
+        const calls: string[][] = [];
+        const ledger = new Ledger(f.root, async (args) => {
+            calls.push(args);
+            return JSON.stringify({
+                ...view,
+                source: { ...view.source, mode, epoch },
+            });
+        });
+        await assert.rejects(ledger.read(), /正本/);
+        assert.deepEqual(calls, [['user-actions', '--json']]);
+    }
+});
+test('共通読取りで終了値1の構造化取得失敗だけを型付きエラーにする', async () => {
+    await using f = await setup(resultRow());
+    const script = join(f.root, 'read-fixture.cjs');
+    const run = boardRunner(f.root, process.execPath, script);
+    const readArgs = ['user-actions', '--json'];
+    const invalid = {
+        ...readyView([]),
+        status: 'unavailable',
+        rows: null,
+        source: {
+            mode: 'shadow',
+            epoch: null,
+            fetchedAt: null,
+            error: {
+                code: 'registry-read-failed',
+                message: '隔離台帳の取得失敗',
+            },
+        },
+    };
+    const stdout = JSON.stringify(invalid);
+    const respond = (output: string, exitCode: number) =>
+        writeFile(
+            script,
+            `process.stdout.write(${JSON.stringify(output)}); process.exitCode = ${exitCode};`,
+        );
+    await respond(stdout, 1);
+    await assert.rejects(new Ledger(f.root, run).read(), (error) => {
+        assert.ok(error instanceof UserActionsUnavailable);
+        assert.deepEqual(error.view, invalid);
+        return true;
+    });
+    for (const [args, output, exitCode] of [
+        [readArgs, '{', 1],
+        [readArgs, JSON.stringify(readyView([])), 1],
+        [readArgs, stdout, 2],
+        [['done', 'U1'], stdout, 1],
+    ] as const) {
+        await respond(output, exitCode);
+        await assert.rejects(run([...args]), (error) => {
+            assert.ok(!(error instanceof UserActionsUnavailable));
+            assert.ok(error instanceof Error);
+            assert.equal((error as Error & { code: number }).code, exitCode);
+            assert.equal((error as Error & { stdout: string }).stdout, output);
+            return true;
+        });
+    }
 });
 test('共通read非対応のCLIには変更操作を送らず、取得失敗を表示する', async () => {
     await using f = await setup(resultRow());

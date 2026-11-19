@@ -171,6 +171,34 @@ test('旧経路の表示は指定された共通読取りを使い、操作ポ�
     assert.ok(JSON.stringify(value.sections).includes('共通CLIの依頼'));
 });
 
+test('旧経路で公式CLIのshadowを表示し、authoritativeまたは世代付き応答を拒否する', async (t) => {
+    const f = await fixture(t);
+    const view = await legacyView();
+    const read = (
+        mode: 'shadow' | 'authoritative' | 'legacy',
+        epoch: string | null,
+    ) =>
+        new BoardReader(f.root, {
+            gateway: async () =>
+                assert.fail('明示した共通読取りで操作ポートが呼ばれた'),
+            legacyView: async () => ({
+                ...view,
+                source: { ...view.source, mode, epoch },
+            }),
+        });
+    const reader = read('shadow', null);
+    const snapshot = await reader.read();
+    assert.equal(snapshot.source, 'shadow');
+    assert.equal(snapshot.userActions?.source.mode, 'shadow');
+    assert.equal(reader.usesRuntimeSnapshot(), false);
+    for (const [mode, epoch] of [
+        ['authoritative', null],
+        ['shadow', 'epoch-1'],
+        ['legacy', 'epoch-1'],
+    ] as const)
+        await assert.rejects(read(mode, epoch).read(), /モード・世代/);
+});
+
 test('任意3原票の不在は空値と警告、registry不在は失敗する', async (t) => {
     const f = await fixture(t);
     for (const name of ['state.json', 'archive.json', 'events.jsonl'])

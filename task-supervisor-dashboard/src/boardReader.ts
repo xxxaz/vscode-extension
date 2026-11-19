@@ -299,7 +299,10 @@ export class BoardReader {
                 : commonView(await (await this.options.gateway()).read());
             if (view.status === 'unavailable')
                 throw new UserActionsUnavailable(view);
-            if (view.source.mode !== 'legacy' || view.source.epoch !== null)
+            if (
+                view.source.mode === 'authoritative' ||
+                view.source.epoch !== null
+            )
                 throw new Error(
                     '旧台帳の共通一覧と正本のモード・世代が一致しません',
                 );
@@ -311,7 +314,7 @@ export class BoardReader {
                     return raw;
                 }),
             };
-            source = 'legacy';
+            source = view.source.mode;
         }
         const [state, archive, eventText] = await Promise.all([
             object('state.json', { facts: {} }),

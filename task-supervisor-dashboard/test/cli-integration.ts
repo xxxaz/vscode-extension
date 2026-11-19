@@ -10,6 +10,7 @@ import {
     type PendingAnswer,
     type Registry,
 } from '../src/boardClient.ts';
+import { UserActionsUnavailable } from '../src/userActionsView.ts';
 
 const board = process.argv[2];
 if (!board)
@@ -90,7 +91,10 @@ const initial = await ledger.read().catch((error: unknown) => {
         );
     throw error;
 });
-const initialRows = commonView(initial).rows;
+const initialView = commonView(initial);
+assert.equal(initialView.source.mode, 'shadow');
+assert.equal(initialView.source.epoch, null);
+const initialRows = initialView.rows;
 assert.equal(
     initialRows.find((row) => row.id === 'U1')?.lifecycle,
     'unexecuted',
@@ -120,6 +124,16 @@ await ledger.answer(p);
 await ledger.answer(p);
 assert.equal(await ledger.hasAnswer(p), true);
 assert.equal(action(await ledger.read(), 'U2').answers?.length, 1);
+await writeFile(join(dir, 'registry.json'), '{');
+await assert.rejects(ledger.read(), (error) => {
+    assert.ok(error instanceof UserActionsUnavailable);
+    assert.equal(error.view.status, 'unavailable');
+    assert.equal(error.view.rows, null);
+    assert.equal(error.view.source.mode, 'shadow');
+    assert.equal(error.view.source.epoch, null);
+    assert.equal(error.view.source.error.code, 'registry-read-failed');
+    return true;
+});
 console.log(
-    '隔離台帳と実board.tsでキック済み・結果確認OK・自由回答原文・同一ID再送の読戻しを確認しました',
+    '隔離台帳と実board.tsで初回読取り・キック済み・結果確認OK・自由回答原文・同一ID再送・取得失敗を確認しました',
 );
