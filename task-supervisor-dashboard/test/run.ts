@@ -1,4 +1,6 @@
 import './actions.test.ts';
+import './userActionsView.test.ts';
+import './boardFeed.test.ts';
 import './runtime.test.ts';
 import './boardModel.test.ts';
 import './boardReader.test.ts';

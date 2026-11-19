@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { type Action, candidates, kind, revision } from './boardClient.ts';
+import { type Action, revision } from './boardClient.ts';
 import type {
     BoardCard,
     BoardField,
@@ -10,6 +10,14 @@ import type {
     BoardTarget,
     BoardText,
 } from './dashboardTypes.ts';
+import {
+    parseUserActionsView,
+    type UserActionRow,
+    UserActionsUnavailable,
+    type UserActionsView,
+    viewInfo,
+    viewOperations,
+} from './userActionsView.ts';
 
 const STATUSES = [
     'ユーザー待ち',
@@ -359,28 +367,6 @@ function readFacts(value: unknown, warnings: string[]): Facts {
     };
 }
 
-function hold(a: Request, actions: Request[]): string | undefined {
-    const waiting = (a.after ?? []).filter((id) =>
-        actions.some((other) => other.id === id && !other.done),
-    );
-    return (
-        [
-            a.holdReason,
-            ...(waiting.length
-                ? [`前提 ${waiting.join('・')} の完了待ち`]
-                : []),
-        ]
-            .filter((s) => s !== undefined && s !== '')
-            .join(' / ') || undefined
-    );
-}
-const sortActions = (rows: Request[]): Request[] =>
-    [...rows].sort(
-        (a, b) =>
-            (a.priority ?? Number.POSITIVE_INFINITY) -
-                (b.priority ?? Number.POSITIVE_INFINITY) ||
-            a.createdAt - b.createdAt,
-    );
 const sortTasks = (rows: Task[]): Task[] =>
     [...rows].sort(
         (a, b) =>
@@ -528,14 +514,8 @@ function statusLines(t: Task, events: Event[], f: Facts): string[] {
         ...(line ? [line] : []),
     ];
 }
-function looksDone(t: Task, f: Facts, actions: Request[]): boolean {
-    if (
-        actions.some(
-            (a) => a.taskId === t.id && !a.done && a.withdrawal === undefined,
-        ) ||
-        pendingBranches(t, f).length
-    )
-        return false;
+function looksDone(t: Task, f: Facts, hasOpenAction: boolean): boolean {
+    if (hasOpenAction || pendingBranches(t, f).length) return false;
     const prs = t.prs.map((n) => f.prs[n]);
     return prs.length
         ? prs.every((p) => p !== undefined && p.state !== 'OPEN') &&
@@ -654,14 +634,17 @@ function sessionFields(
 
 export function projectBoard(input: {
     registry: unknown;
+    userActions: UserActionsView;
     archive: unknown;
     state: unknown;
     events: unknown[];
     updatedAt: number;
-    source: 'legacy' | 'authoritative';
+    source: BoardSnapshot['source'];
     readWarnings?: string[];
     repoUrl?: string;
 }): BoardSnapshot {
+    const view = parseUserActionsView(input.userActions);
+    if (view.status === 'unavailable') throw new UserActionsUnavailable(view);
     const r = object(input.registry),
         a = object(input.archive),
         state = object(input.state);
@@ -671,6 +654,12 @@ export function projectBoard(input: {
         actions = array(r.actions, request);
     uniqueIds([...tasks, ...archived]);
     uniqueIds(actions);
+    const actionsById = new Map(actions.map((action) => [action.id, action]));
+    if (
+        actionsById.size !== view.rows.length ||
+        view.rows.some((row) => !actionsById.has(row.id))
+    )
+        throw new Error('台帳と共通の依頼一覧が一致しません');
     const warnings = [...(input.readWarnings ?? [])];
     const rawFacts = state.facts === undefined ? {} : object(state.facts);
     warnings.push(...strings(rawFacts.warnings ?? []));
@@ -689,37 +678,33 @@ export function projectBoard(input: {
         }
     }
     const known = new Map([...tasks, ...archived].map((t) => [t.id, t]));
-    const live = actions.filter((v) => !v.done && v.withdrawal === undefined);
-    const open = sortActions(
-        live.filter(
-            (v) => v.ranAt === undefined && hold(v, actions) === undefined,
-        ),
+    const live = view.rows.filter(
+        (row) => row.lifecycle !== 'completed' && row.lifecycle !== 'withdrawn',
     );
-    const held = sortActions(
-        live.filter(
-            (v) => v.ranAt === undefined && hold(v, actions) !== undefined,
-        ),
+    const execution = live.filter(
+        (row) => row.lifecycle === 'unexecuted' && !row.availability.held,
     );
-    const awaiting = sortActions(live.filter((v) => v.ranAt !== undefined));
-    const eligible = {
-        complete: new Set(
-            candidates({ version: 1, actions }, 'complete').map((v) => v.id),
-        ),
-        ran: new Set(
-            candidates({ version: 1, actions }, 'ran').map((v) => v.id),
-        ),
-        answer: new Set(
-            candidates({ version: 1, actions }, 'answer').map((v) => v.id),
-        ),
-    };
+    const decision = live.filter(
+        (row) => row.lifecycle === 'decision' && !row.availability.held,
+    );
+    const held = live.filter(
+        (row) =>
+            row.availability.held &&
+            (row.lifecycle === 'unexecuted' || row.lifecycle === 'decision'),
+    );
+    const executed = live.filter((row) => row.lifecycle === 'executed');
+    const awaiting = live.filter((row) => row.lifecycle === 'awaiting-result');
     const section = (
         id: string,
         title: string,
         cards: BoardCard[],
         defaultOpen = true,
     ): BoardSection => ({ id, title, cards, defaultOpen });
-    const actionCard = (v: Request, group: string): BoardCard => {
-        const prefix = `${group}/${v.id}`,
+    const actionCard = (row: UserActionRow): BoardCard => {
+        const v = request(row.action);
+        const selected = actionsById.get(row.id);
+        if (!selected) throw new Error('台帳に依頼がありません');
+        const prefix = `action/${row.id}`,
             t = v.taskId ? known.get(v.taskId) : undefined;
         const fields = [
             field(
@@ -753,36 +738,41 @@ export function projectBoard(input: {
                     ),
                 ),
             );
-        if (kind(v) === 'decision')
+        if (row.kind === 'decision')
             fields.push(field('推奨回答', text('推奨で進める')));
-        if (hold(v, actions))
+        if (row.availability.holdReason !== null)
             fields.push(
-                field('保留理由・再開条件', text(hold(v, actions) ?? '')),
+                field('保留理由・再開条件', text(row.availability.holdReason)),
             );
         if (v.ranAt !== undefined)
             fields.push(
-                field('実行済み', text(`${time(v.ranAt)}・結果の確認待ち`)),
+                field(
+                    '実行済み',
+                    text(
+                        `${time(v.ranAt)}・${row.lifecycle === 'awaiting-result' ? '結果の確認待ち' : '完了待ち'}`,
+                    ),
+                ),
             );
         if (v.needsOk)
             fields.push(field('完了条件', text('結果を確認して OK なら完了')));
         if (v.after?.length)
             fields.push(field('前提', text(v.after.join('・'))));
-        const operations: BoardCard['operations'] =
-            group === 'held'
-                ? []
-                : (['complete', 'ran', 'answer'] as const)
-                      .filter((operation) => eligible[operation].has(v.id))
-                      .map((operation) => ({
-                          operation,
-                          id: v.id,
-                          revision: revision(v),
-                          label:
-                              operation === 'complete'
-                                  ? '完了（結果確認 OK）'
-                                  : operation === 'ran'
-                                    ? 'キック済み'
-                                    : '回答する',
-                      }));
+        fields.push(field('表示内容の版', text(row.version)));
+        const labels = {
+            complete: row.operations.confirmResult
+                ? '結果確認 OK'
+                : row.kind === 'decision'
+                  ? '推奨で進める'
+                  : '完了',
+            ran: 'キック済み',
+            answer: '回答',
+        };
+        const operations = viewOperations(row).map((operation) => ({
+            operation,
+            id: row.id,
+            revision: revision(selected),
+            label: labels[operation],
+        }));
         const chars = [...v.text],
             summary =
                 v.summary ||
@@ -790,10 +780,10 @@ export function projectBoard(input: {
                     ? `${chars.slice(0, 47).join('')}…`
                     : v.text);
         return {
-            id: v.id,
+            id: row.id,
             title: summary,
             summary,
-            badge: `${kind(v) === 'execution' ? '実行' : '判断'} · 優先度 ${v.priority ?? '未指定'}`,
+            badge: `${row.kind === 'execution' ? '実行' : '判断'} · 優先度 ${v.priority ?? '未指定'}`,
             fields,
             links: [],
             operations,
@@ -801,7 +791,7 @@ export function projectBoard(input: {
     };
     const taskCard = (t: Task): BoardCard => {
         const prefix = `task/${t.id}`,
-            relatedActions = live.filter((v) => v.taskId === t.id);
+            relatedActions = live.filter((row) => row.action.taskId === t.id);
         const taskEvents = eventsByTask.get(t.id) ?? [];
         const status = [
             text(`${t.status}${t.imported ? ' 🔎要確認' : ''}`),
@@ -812,21 +802,28 @@ export function projectBoard(input: {
                 : statusLines(t, taskEvents, facts)
             ).map(text),
         ];
-        const taskOpen = open.filter((v) => v.taskId === t.id);
-        if (taskOpen.length)
+        const count = (rows: UserActionRow[]) =>
+            rows.filter((row) => row.action.taskId === t.id).length;
+        const executionCount = count(execution),
+            decisionCount = count(decision),
+            heldCount = count(held),
+            executedCount = count(executed),
+            waitingCount = count(awaiting);
+        if (executionCount || decisionCount)
             status.push(
                 text(
-                    `👤 実行待ち ${taskOpen.filter((v) => kind(v) === 'execution').length} / 判断待ち ${taskOpen.filter((v) => kind(v) === 'decision').length}`,
+                    `👤 実行待ち ${executionCount} / 判断待ち ${decisionCount}`,
                 ),
             );
-        const heldCount = held.filter((v) => v.taskId === t.id).length,
-            waitingCount = relatedActions.filter(
-                (v) => v.ranAt !== undefined,
-            ).length;
         if (heldCount) status.push(text(`⏸ 保留中の依頼 ${heldCount}`));
+        if (executedCount)
+            status.push(text(`⏳ 実行済み（完了待ち） ${executedCount}`));
         if (waitingCount)
             status.push(text(`⏳ 結果の確認待ち ${waitingCount}`));
-        if (t.status !== '完了' && looksDone(t, facts, actions))
+        if (
+            t.status !== '完了' &&
+            looksDone(t, facts, relatedActions.length > 0)
+        )
             status.push(text('✅ 完了候補'));
         if (t.status === '完了' && t.completedAt !== undefined)
             status.push(
@@ -1039,30 +1036,14 @@ export function projectBoard(input: {
         };
     };
     const sections: BoardSection[] = [
-        section(
-            'execution',
-            '実行待ち',
-            open
-                .filter((v) => kind(v) === 'execution')
-                .map((v) => actionCard(v, 'execution')),
-        ),
-        section(
-            'decision',
-            '判断待ち',
-            open
-                .filter((v) => kind(v) === 'decision')
-                .map((v) => actionCard(v, 'decision')),
-        ),
-        section(
-            'held',
-            '保留・前提待ちの依頼',
-            held.map((v) => actionCard(v, 'held')),
-            false,
-        ),
+        section('execution', '実行待ち', execution.map(actionCard)),
+        section('decision', '判断待ち', decision.map(actionCard)),
+        section('held', '保留・前提待ちの依頼', held.map(actionCard), false),
+        section('executed', '実行済み（完了待ち）', executed.map(actionCard)),
         section(
             'awaiting',
             '実行済み・結果の確認待ち',
-            awaiting.map((v) => actionCard(v, 'awaiting')),
+            awaiting.map(actionCard),
         ),
         section(
             'tasks',
@@ -1228,6 +1209,7 @@ export function projectBoard(input: {
     return {
         schemaVersion: 1,
         source: input.source,
+        userActions: viewInfo(view),
         updatedAt: num(input.updatedAt),
         supervisor: supLink,
         warnings: [...new Set(warnings)],

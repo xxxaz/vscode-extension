@@ -1,6 +1,6 @@
 # Task Supervisor
 
-監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。Markdownへは書き戻しません。
+監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。0.3.0では常駐部と同じ共通の依頼一覧を使い、表示版・取得状態を明示します。Markdownへは書き戻しません。
 更新日: 2026-11-19。
 
 ## 一覧を開く
@@ -24,23 +24,25 @@
 
 依頼の行を開くと、その状態で使える操作だけが表示されます。コマンドパレットの従来の3操作も使えます。
 
-- **完了（結果確認 OK）**: 依頼と実行結果を確認して記録します。結果確認が必要なら `done --ok` を使います。
+- **完了（結果確認 OK）**: 一般の実行依頼は通常完了、結果確認が必要な依頼は結果OKとして記録します。判断行の「推奨で完了」は資料と回答者を確認し、「推奨で進める」という回答を保存します。
 - **キック済み**: 実行の事実を `ran` で記録し、結果確認待ちを完了と混同しません。
 - **判断に回答**: 「推奨で進める」または自由記述と回答者を保存します。自由記述は開いた無題テキストへ入力し、通知の「回答を確認」を押します。改行と前後の空白を原文として取得し、ディスクへの保存は不要です。
 
-操作前に確認画面を出します。一覧の表示後に依頼が変われば拒否し、別の依頼へ付け替えません。保留・前提未完了・取り下げ・完了済みは操作候補から除きます。回答を完了印だけで代用しません。
+操作前に確認画面を出します。一覧の表示後に依頼が変われば拒否し、別の依頼へ付け替えません。操作候補は共通一覧のoperationsを使い、保存直前にGatewayが最新の依頼・正本・権限を再検証します。回答を完了印だけで代用しません。
 
 保存成功・失敗・受付済み結果待ちを区別して表示します。未保存回答や結果不明の操作は、原文と同じ操作IDをワークスペース状態に保持します。次の操作で保存済みか照会し、必要なら同じ内容・IDで再送します。
 
 ## 読取りと常駐部への接続
 
-読取り元は `.agents/ローカルタスク/監督/` の `registry.json`、`events.jsonl`、`state.json`、`archive.json` です。生成Markdownの表を解析しません。分類・並び・補足は `board.ts` のregistry/render/narrativeの規則に合わせます。`test:board-parity` は正本の公開関数を直接読み、実台帳で一致を確認する補助です。
+利用者操作一覧は共通の `UserActionsView` を読みます。常駐部では `snapshot.json` の `userActions`、切替前は正式な `board.ts user-actions --json` を使います。分類・並び・操作候補を拡張内で再定義しません。旧CLIに正式read入口がない場合は取得失敗として表示し、独自分類へ戻りません。この版の導入には共通read対応CLIが必要です。
 
-操作UIは `ActionGateway` を使います。切替前は既存CLI、`runtime/authority.json` が `authoritative` なら常駐CLIへ接続します。`preparing`・破損・観測済みの切替記録の消失は拒否し、常駐部の停止や未対応を理由に旧CLIへ戻りません。切替後の一覧も常駐部の `snapshot.json` を正本にします。切替や破損を読取りだけで観測した場合も、操作ポートと同じ永続記録へ保存し、Reload後の旧CLI復帰を防ぎます。heartbeatが古ければ参考表示と明示します。
+タスク・お知らせ・出来事の補足は `.agents/ローカルタスク/監督/` の `registry.json`、`events.jsonl`、`state.json`、`archive.json` を使います。正本切替後のタスク一覧はsnapshot内のregistryを使います。生成Markdownの表は解析しません。`test:board-parity` は正本の共通射影を直接読み、実台帳との表示対応を確認する補助です。
+
+操作UIは `ActionGateway` を使います。切替前は既存CLI、`runtime/authority.json` が `authoritative` なら常駐CLIへ接続します。`preparing`・破損・観測済みの切替記録の消失は拒否し、常駐部の停止や未対応を理由に旧CLIへ戻りません。切替後の一覧も常駐部の `snapshot.json` を正本にします。切替や破損を読取りだけで観測した場合も、操作ポートと同じ永続記録へ保存し、Reload後の旧CLI復帰を防ぎます。heartbeatの欠損・期限切れ・未来時刻・世代不一致・snapshot保存エラーを取得失敗として扱います。ファイル更新が止まっても、表示中は5秒間隔の再検査で停止を検出します。最後の正常な行と更新時刻・共通表示版を残し、取得失敗と取得時点を表示して行操作を無効にします。正常な空一覧とは区別します。
 
 常駐経路は選択時のタスク版と回答contextの版を固定し、型付きの `action.complete`・`action.executed`・`action.answer` を `submit` へ渡します。`capabilities` に対象操作がない場合は送信前に拒否します。受付の `queued` と適用済み、担当の受領・処理完了は別の状態です。結果はCLI返却の対象ルート内のパスから読み、拡張はSQLiteを開きません。
 
-現Markdownにない常駐部の孤立・稼働・待機・報告の詳細表示は次段階です。切替後の一覧にも未対応の警告を出し、この一覧だけで正常とは判定しません。常駐部の業務書込み公開後の実結合・実運用切替は別途必要です。未対応の段階で切り替えないでください。切替前の旧CLIには、完了・キック済みの原子的な版照合や永続的な操作IDの重複排除がありません。保存前の再読取りと保存後の読戻しで確認します。
+常駐部の孤立・稼働・待機・報告の詳細表示は次段階です。この一覧だけで全体が正常とは判定しません。常駐部の業務書込み公開後の実結合・実運用切替は別途必要です。未対応の段階で切り替えないでください。切替前の旧CLIには、完了・キック済みの原子的な版照合や永続的な操作IDの重複排除がありません。保存前の再読取りと保存後の読戻しで確認します。
 
 ## 必要な環境
 
@@ -59,26 +61,27 @@
 ```sh
 npm ci
 npm run package
-npm run preview
+npm run preview -- --skill-dir=<共通射影を含む監督skillディレクトリ>
 ```
 
-`package` は型検査・テスト・バンドル生成・配布HTMLと配布JSの接続検査を実行し、`dist/task-supervisor-dashboard.vsix` を作ります。プレビューはローカルのサンプル台帳を使い、操作を書き込みません。`npm run preview -- <workspace-root> --port=8875` で実台帳の読取り表示も確認できます。外部通信はありません。
+`package` は型検査・テスト・バンドル生成・配布HTMLと配布JSの接続検査を実行し、`dist/task-supervisor-dashboard.vsix` を作ります。プレビューはローカルのサンプル台帳を使い、操作を書き込みません。`npm run preview -- <workspace-root> --skill-dir=<監督skillディレクトリ> --port=8875` で実台帳の読取り表示も確認できます。外部通信はありません。
 
 正本との照合は次で実行します（外部リポジトリのためCIではなく、対象ワークスペースで行います）。
 
 ```sh
 npm run test:board-parity -- <task-supervisorのディレクトリ> <workspace-root>
+npm run test:runtime-view -- <公開候補のtask-supervisorディレクトリ>
 ```
 
 手動導入では、VS Codeを動かす環境の端末で次を実行します。コンテナの構成へ入れる前にもVSIXから試せます。
 
 ```sh
-code --install-extension <task-supervisor-dashboard-0.2.1.vsixのパス> --force
+code --install-extension <task-supervisor-dashboard-0.3.0.vsixのパス> --force
 ```
 
 導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 監督のダッシュボードを開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
 
-既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.2.1` タグでRelease workflowが `task-supervisor-dashboard-0.2.1.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
+既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.3.0` タグでRelease workflowが `task-supervisor-dashboard-0.2.1.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
 
 ## 実装の配置
 
@@ -87,7 +90,8 @@ code --install-extension <task-supervisor-dashboard-0.2.1.vsixのパス> --force
 | `src/extension.ts`                                         | VS Codeの入口・監視・一覧と操作の接続                        |
 | `src/dashboardPanels.ts`                                   | 中央タブの再利用・Serializerによる同じワークスペースへの復元 |
 | `src/boardReader.ts`                                       | 4原票と常駐正本の読取り・整合確認                            |
-| `src/boardModel.ts`                                        | 分類・並び・全表示項目の純粋な投影                           |
+| `src/boardModel.ts`                                        | 共通行の順序と状態を保った表示項目の純粋な投影               |
+| `src/userActionsView.ts`                                   | 共通wireの検証・表示用取得状態・操作候補の対応               |
 | `src/boardFeed.ts`                                         | 更新の集約・直列読取り・失敗時の表示保持                     |
 | `src/dashboardTypes.ts`                                    | 表示データと固定メッセージの契約                             |
 | `src/dashboardClient.ts`                                   | キー付きDOMの差分更新と状態保持                              |

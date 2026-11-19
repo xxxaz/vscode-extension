@@ -62,6 +62,7 @@ export function hasBoardOperation(
     snapshot: BoardSnapshot,
     message: Extract<BoardMessage, { type: 'operation' }>,
 ): boolean {
+    if (snapshot.userActions?.status === 'unavailable') return false;
     return snapshot.sections.some((section) =>
         section.cards.some((card) =>
             card.operations.some(

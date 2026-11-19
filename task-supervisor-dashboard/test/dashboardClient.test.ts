@@ -90,6 +90,15 @@ const snapshot = (cards: BoardCard[] = [card()]): BoardSnapshot => ({
         },
     ],
 });
+
+const readyView = (
+    viewVersion: string,
+    fetchedAt: number,
+): NonNullable<BoardSnapshot['userActions']> => ({
+    status: 'ready',
+    viewVersion,
+    source: { mode: 'legacy', epoch: null, fetchedAt, error: null },
+});
 function setup(saved?: unknown) {
     const dom = new JSDOM('<!doctype html><div id="host"></div>', {
         pretendToBeVisual: true,
@@ -476,7 +485,8 @@ test('Webviewはnonce付きのCSSとscriptだけを許可しHTML属性をエス�
     );
     try {
         assert.equal(
-            unsafe.window.document.getElementById('board')?.dataset.workspaceUri,
+            unsafe.window.document.getElementById('board')?.dataset
+                .workspaceUri,
             'file:///x"><img src=x onerror=bad>',
         );
         assert.equal(
@@ -569,10 +579,11 @@ test('通知と出来事の内部IDは非表示にし、U・T番号と更新用�
     }
 });
 
-test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・フォーカスとスクロールを保つ', () => {
+test('取得した版が変わりカードが結果待ちへ移ってもDOM・開閉・検索・フォーカスとスクロールを保つ', () => {
     const app = setup();
     const moved = (destination: string, item = card()): BoardSnapshot => ({
         ...snapshot([]),
+        userActions: readyView(`view-${destination}`, 1795096801000),
         sections: ['execution', 'awaiting', 'held'].map((id) => ({
             id,
             title: id,
@@ -585,6 +596,9 @@ test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・�
         const original = app.row('U1');
         original.open = true;
         const button = original.querySelector<HTMLButtonElement>('.operation')!;
+        const filter = app.host.querySelector<HTMLInputElement>('input')!;
+        filter.value = '対象・状態';
+        filter.dispatchEvent(new app.dom.window.Event('input'));
         button.focus();
         const field = original.querySelector('.fields');
         const pre = original.querySelector('pre')!;
@@ -593,6 +607,7 @@ test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・�
         app.update(
             moved('awaiting', {
                 ...card(),
+                title: '依頼の更新後の要約',
                 badge: '結果確認待ち',
                 operations: [card().operations[0]],
             }),
@@ -604,6 +619,13 @@ test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・�
         );
         assert.equal(original.querySelector('.fields'), field);
         assert.equal(original.open, true);
+        assert.equal(filter.value, '対象・状態');
+        assert.equal(original.hidden, false);
+        assert.match(original.textContent!, /依頼の更新後の要約/);
+        assert.match(
+            app.host.querySelector('.metadata')!.textContent!,
+            /依頼一覧の版 view-awaiting/,
+        );
         assert.equal(app.dom.window.document.activeElement, button);
         assert.equal(pre.scrollTop, 24);
         assert.equal(app.host.scrollTop, 180);
@@ -633,6 +655,124 @@ test('カードが実行待ちから結果待ちへ移ってもDOM・開閉・�
             )!.open,
             false,
         );
+    } finally {
+        app.close();
+    }
+});
+
+test('読取りの初回失敗を空一覧から区別し、正常な空一覧を取得すると失敗表示を解除する', () => {
+    const app = setup();
+    try {
+        const empty = app.host.querySelector<HTMLElement>('.board-empty')!;
+        const status = app.host.querySelector<HTMLElement>('.status')!;
+        const filter = app.host.querySelector<HTMLInputElement>('input')!;
+        filter.dispatchEvent(new app.dom.window.Event('input'));
+        assert.equal(empty.hidden, true);
+        app.mounted.update({
+            type: 'status',
+            message: '依頼一覧を取得できません',
+            failed: true,
+            state: 'error',
+        });
+        assert.equal(status.hidden, false);
+        assert.match(status.textContent!, /取得できません/);
+        assert.equal(empty.hidden, true);
+
+        app.update({
+            ...snapshot([]),
+            sections: [],
+            userActions: readyView('empty-view', 1795096801000),
+        });
+        assert.equal(status.hidden, true);
+        assert.equal(empty.hidden, false);
+        assert.match(empty.textContent!, /表示する項目はありません/);
+    } finally {
+        app.close();
+    }
+});
+
+test('取得不能中は前回の一覧と取得時点を保持し、行操作は復旧まで無効にする', () => {
+    const app = setup();
+    try {
+        const fetchedAt = 1795096801000;
+        const initial = {
+            ...snapshot(),
+            userActions: readyView('ready-view', fetchedAt),
+        };
+        app.update(initial);
+        const row = app.row('U1');
+        row.open = true;
+        const section = row.closest('.board-section');
+        const button = row.querySelector<HTMLButtonElement>('.operation')!;
+        const metadata = app.host.querySelector('.metadata')!;
+        const updateTime = new Date(initial.updatedAt).toLocaleString('ja-JP');
+        const fetchTime = new Date(fetchedAt).toLocaleString('ja-JP');
+        assert.ok(metadata.textContent!.includes(`取得時点 ${fetchTime}`));
+        const filter = app.host.querySelector<HTMLInputElement>('input')!;
+        filter.value = 'U1';
+        filter.dispatchEvent(new app.dom.window.Event('input'));
+        app.host.scrollTop = 180;
+        app.update({
+            ...initial,
+            userActions: {
+                status: 'unavailable',
+                viewVersion: 'unavailable-view',
+                source: {
+                    mode: 'authoritative',
+                    epoch: 'runtime-epoch',
+                    fetchedAt: null,
+                    error: {
+                        code: 'runtime-stopped',
+                        message: '常駐部の停止を検出しました',
+                    },
+                },
+                lastSuccessful: { viewVersion: 'ready-view', fetchedAt },
+            },
+            warnings: ['常駐部の停止を検出しました'],
+        });
+        assert.equal(app.row('U1'), row);
+        assert.equal(row.closest('.board-section'), section);
+        assert.equal(row.open, true);
+        assert.equal(row.querySelector('.operation'), button);
+        assert.equal(filter.value, 'U1');
+        assert.equal(app.host.scrollTop, 180);
+        assert.match(metadata.textContent!, /依頼一覧の版 unavailable-view/);
+        assert.match(metadata.textContent!, /取得失敗.*runtime-stopped/);
+        assert.ok(metadata.textContent!.includes(`更新 ${updateTime}`));
+        assert.ok(
+            metadata.textContent!.includes(
+                `前回正常取得 ${fetchTime}（版 ready-view）`,
+            ),
+        );
+        assert.match(
+            app.host.querySelector('.warnings')!.textContent!,
+            /常駐部の停止/,
+        );
+        app.mounted.update({ type: 'status', message: '', busy: false });
+        assert.equal(button.disabled, true);
+        button.dispatchEvent(
+            new app.dom.window.MouseEvent('click', { bubbles: true }),
+        );
+        assert.deepEqual(app.messages, [{ type: 'ready' }]);
+
+        app.update({
+            ...initial,
+            userActions: readyView('recovered-view', fetchedAt + 1000),
+        });
+        assert.equal(app.row('U1'), row);
+        assert.equal(row.open, true);
+        assert.equal(filter.value, 'U1');
+        assert.equal(app.host.scrollTop, 180);
+        assert.equal(button.disabled, false);
+        assert.match(metadata.textContent!, /依頼一覧の版 recovered-view/);
+        assert.doesNotMatch(metadata.textContent!, /取得失敗|前回正常取得/);
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'operation',
+            operation: 'complete',
+            id: 'U1',
+            revision: 'revision-1',
+        });
     } finally {
         app.close();
     }

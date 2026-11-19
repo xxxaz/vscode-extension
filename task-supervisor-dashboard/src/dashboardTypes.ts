@@ -1,4 +1,5 @@
 import type { Operation } from './boardClient.ts';
+import type { UserActionsInfo } from './userActionsView.ts';
 
 export type BoardTarget =
     | { kind: 'task'; id: string }
@@ -44,7 +45,8 @@ export interface BoardSection {
 }
 export interface BoardSnapshot {
     schemaVersion: 1;
-    source: 'legacy' | 'authoritative';
+    source: 'legacy' | 'shadow' | 'authoritative';
+    userActions?: UserActionsInfo;
     workspace?: string;
     updatedAt: number;
     counts: { label: string; value: number; section: string }[];

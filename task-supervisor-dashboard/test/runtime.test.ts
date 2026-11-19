@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { type Interaction, record } from '../src/actions.ts';
 import { type ClientState, createGateway } from '../src/backend.ts';
-import { type Action, Ledger, type PendingAnswer } from '../src/boardClient.ts';
+import {
+    type Action,
+    candidates,
+    Ledger,
+    type PendingAnswer,
+} from '../src/boardClient.ts';
 import { OperationPending } from '../src/gateway.ts';
 import { runtimeIO, runtimeRelative } from '../src/runtimeFiles.ts';
 import {
@@ -19,6 +24,20 @@ import {
     type RuntimeResult,
     type RuntimeSnapshot,
 } from '../src/runtimeGateway.ts';
+import {
+    type UserActionRow,
+    UserActionsUnavailable,
+    type UserActionsView,
+} from '../src/userActionsView.ts';
+import {
+    actionable,
+    awaitingResult,
+    noOperations,
+    readyView,
+    viewRow,
+    waitingForDecision,
+    waitingForExecution,
+} from './viewFixture.ts';
 
 const authority = (): Authority => ({
     schemaVersion: 1,
@@ -35,9 +54,28 @@ const action = (extra: Partial<Action> = {}): Action => ({
     command: 'echo 確認',
     needsOk: true,
     done: false,
+    createdAt: 1,
     ...extra,
 });
-function fixture(row = action()) {
+const task = { id: 'T341', title: '対象タスク', status: '実装中' };
+const resultRow = (
+    extra: Partial<Action> = {},
+    relatedTask: UserActionRow['task'] = task,
+) => viewRow(action({ ranAt: 1, ...extra }), awaitingResult, relatedTask);
+const executionRow = () => viewRow(action(), waitingForExecution, task);
+const decisionRow = (extra: Partial<Action> = {}) =>
+    viewRow(
+        action({
+            kind: 'decision',
+            command: undefined,
+            needsOk: false,
+            ...extra,
+        }),
+        waitingForDecision,
+        task,
+    );
+
+function fixture(row = resultRow()) {
     let saved: PendingRuntime | undefined;
     const writes: (PendingRuntime | undefined)[] = [];
     const journal: RuntimeJournal = {
@@ -47,12 +85,18 @@ function fixture(row = action()) {
             writes.push(saved);
         },
     };
-    const snapshot: RuntimeSnapshot = {
+    const snapshot: RuntimeSnapshot & { userActions: UserActionsView } = {
         schemaVersion: 1,
         mode: 'authoritative',
         generation: 'process-1',
-        registry: { version: 1, actions: [row] },
+        registry: { version: 1, actions: [] },
         tasks: [{ id: 'T341', version: 17 }],
+        userActions: readyView([row], {
+            mode: 'authoritative',
+            epoch: 'epoch-1',
+            fetchedAt: 1000,
+            error: null,
+        }),
     };
     const sent: RuntimeCommand[] = [];
     const queried: Receipt[] = [];
@@ -131,7 +175,7 @@ for (const [op, type] of [
     ['ran', 'action.executed'],
 ] as const) {
     test(`${type}は所属T番号・U番号・選択時のタスク版を封筒へ渡す`, async () => {
-        const f = fixture();
+        const f = fixture(op === 'complete' ? resultRow() : executionRow());
         await f.gateway.complete(await selected(f), op);
         const command = f.sent[0];
         assert.equal(command.schemaVersion, 1);
@@ -150,11 +194,105 @@ for (const [op, type] of [
         assert.equal(f.writes[0]?.command.commandId, command.commandId);
     });
 }
+test('実行済みの一般依頼は表示版が変わっても確認なしで所属タスク版へ完了を送る', async () => {
+    const row = viewRow(
+        action({
+            ranAt: 1,
+            needsOk: false,
+            runtime: { epoch: '別の世代', taskId: 'T999', version: 999 },
+        }),
+        {
+            kind: 'execution',
+            lifecycle: 'executed',
+            availability: actionable,
+            operations: { ...noOperations, complete: true },
+        },
+        task,
+    );
+    const f = fixture(row);
+    const registry = await f.gateway.read();
+    assert.deepEqual(candidates(registry, 'ran'), []);
+    const [candidate] = candidates(registry, 'complete');
+    assert.deepEqual(candidate.runtime, {
+        epoch: 'epoch-1',
+        taskId: 'T341',
+        version: 17,
+    });
+    const view = f.snapshot.userActions;
+    assert.equal(view.status, 'ready');
+    f.snapshot.userActions = {
+        ...view,
+        viewVersion: '一覧の次の表示版',
+        rows: [{ ...row, version: '行の次の表示版' }],
+    };
+    await f.gateway.complete(candidate, 'complete');
+    const [command] = f.sent;
+    assert.equal(command.expectedVersion, 17);
+    assert.deepEqual(command.payload, {
+        actionId: 'U341',
+        confirmedResult: false,
+    });
+});
+test('依頼一覧の取得失敗は構造化エラーとして扱い、常駐部へ送信しない', async () => {
+    const f = fixture();
+    const selection = await selected(f);
+    f.snapshot.userActions = {
+        schemaVersion: 1,
+        status: 'unavailable',
+        viewVersion: '一覧の失敗時の版',
+        source: {
+            mode: 'authoritative',
+            epoch: 'epoch-1',
+            fetchedAt: 1000,
+            error: {
+                code: 'REGISTRY_READ_FAILED',
+                message: '台帳の取得に失敗しました',
+            },
+        },
+        rows: null,
+    };
+    await assert.rejects(f.gateway.complete(selection, 'complete'), (error) => {
+        assert.ok(error instanceof UserActionsUnavailable);
+        assert.deepEqual(error.view, f.snapshot.userActions);
+        assert.match(
+            error.message,
+            /REGISTRY_READ_FAILED.+台帳の取得に失敗しました/,
+        );
+        return true;
+    });
+    assert.deepEqual(f.sent, []);
+    assert.equal(f.journal.get(), undefined);
+});
+test('依頼一覧が欠落するか正本とモード・世代が一致しなければ操作を拒否する', async () => {
+    const f = fixture();
+    const selection = await selected(f);
+    const view = f.snapshot.userActions;
+    assert.equal(view.status, 'ready');
+    const mismatchedViews = [
+        [undefined, /応答形式が不正/],
+        [
+            { ...view, source: { ...view.source, mode: 'shadow' } },
+            /モード・世代/,
+        ],
+        [
+            { ...view, source: { ...view.source, epoch: 'epoch-2' } },
+            /モード・世代/,
+        ],
+    ] satisfies [UserActionsView | undefined, RegExp][];
+    for (const [userActions, reason] of mismatchedViews) {
+        f.ports.snapshot = async () => ({
+            ...f.snapshot,
+            registry: { version: 1, actions: [action({ ranAt: 1 })] },
+            userActions,
+        });
+        await assert.rejects(f.gateway.complete(selection, 'complete'), reason);
+    }
+    assert.deepEqual(f.sent, []);
+    assert.equal(f.journal.get(), undefined);
+});
 test('回答は取得したcontextのタスク版と原文・回答者・資料版・同じ操作IDを渡す', async () => {
     const f = fixture(
-        action({
-            kind: 'decision',
-            command: undefined,
+        decisionRow({
             doc: 'https://example.com/doc',
         }),
     );
@@ -183,7 +321,7 @@ test('回答は取得したcontextのタスク版と原文・回答者・資料�
     });
 });
 test('所属タスクのない依頼や読取り後に版が変わった依頼は送らない', async () => {
-    const standalone = fixture(action({ taskId: undefined }));
+    const standalone = fixture(resultRow({ taskId: undefined }, null));
     await assert.rejects(
         standalone.gateway.complete(await selected(standalone), 'complete'),
         /対象タスクの版/,
@@ -304,9 +442,7 @@ for (const next of [
 }
 for (const op of ['complete', 'ran', 'answer'] as const) {
     test(`${op}が機能一覧で未対応なら旧CLIで代用せず送信もしない`, async () => {
-        const f = fixture(
-            action({ kind: op === 'answer' ? 'decision' : 'execution' }),
-        );
+        const f = fixture(op === 'ran' ? executionRow() : resultRow());
         f.ports.capabilities = async () => ({
             schemaVersion: 1,
             authoritativeWrites: true,
@@ -571,7 +707,7 @@ for (const taskVersion of [
     '17',
 ]) {
     test(`回答contextのタスク版${String(taskVersion)}は選択時の版へ付け替えず拒否する`, async () => {
-        const f = fixture(action({ kind: 'decision', command: undefined }));
+        const f = fixture(decisionRow());
         const context = f.ports.answerContext;
         f.ports.answerContext = async (row, documentVersion) =>
             ({

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,14 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
+import type { BoardUpdate } from '../src/dashboardTypes.ts';
+import { runtimeRelative } from '../src/runtimeFiles.ts';
+import {
+    noOperations,
+    readyView,
+    viewRow,
+    waitingForExecution,
+} from './viewFixture.ts';
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
@@ -20,8 +28,54 @@ const bundle = buildSync({
     write: false,
 }).outputFiles[0].text;
 
-async function host(mode: 'retry' | 'removed' | 'untrusted') {
+async function host(mode: 'retry' | 'removed' | 'untrusted' | 'freshness') {
     const root = await mkdtemp(join(tmpdir(), 't341-panel-host-'));
+    const initialTime = 1_700_000_000_000;
+    let now = initialTime;
+    let timerId = 0;
+    const timers = new Map<number, { callback: () => void; delay: number }>();
+    const updates: BoardUpdate[] = [];
+    const updateListeners = new Set<(update: BoardUpdate) => void>();
+    if (mode === 'freshness') {
+        const directory = join(root, runtimeRelative);
+        await mkdir(directory, { recursive: true });
+        const epoch = 'epoch-1';
+        const generation = 'process-1';
+        const action = {
+            id: 'U1',
+            text: '停止前の依頼',
+            done: false,
+            createdAt: initialTime,
+        };
+        const row = viewRow(action, {
+            ...waitingForExecution,
+            operations: { ...noOperations, execute: true, complete: true },
+        });
+        for (const [name, value] of Object.entries({
+            'authority.json': {
+                schemaVersion: 1,
+                mode: 'authoritative',
+                epoch,
+                migrationId: 'migration-1',
+                fingerprint: 'fingerprint-1',
+            },
+            'heartbeat.json': { schemaVersion: 1, generation, at: initialTime },
+            'snapshot.json': {
+                schemaVersion: 1,
+                mode: 'authoritative',
+                generation,
+                tasks: [],
+                registry: { version: 1, tasks: [], actions: [action] },
+                userActions: readyView([row], {
+                    mode: 'authoritative',
+                    epoch,
+                    fetchedAt: initialTime,
+                    error: null,
+                }),
+            },
+        }))
+            await writeFile(join(directory, name), JSON.stringify(value));
+    }
     const uri = (path: string) => ({
         scheme: 'file',
         fsPath: path,
@@ -33,15 +87,21 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
     const panels: {
         disposed: boolean;
         webview: { html: string };
+        receive(message: unknown): void;
         dispose(): void;
     }[] = [];
     const subscriptions: { dispose(): void }[] = [];
     let initializes = 0;
     let reads = 0;
+    let gatewayLookups = 0;
     const disposable = () => ({ dispose() {} });
     const workspace = {
         workspaceFolders: [folder],
         isTrusted: true,
+        getConfiguration() {
+            gatewayLookups++;
+            return { get: () => undefined };
+        },
         createFileSystemWatcher() {
             initializes++;
             if (mode === 'retry' && initializes === 1)
@@ -78,6 +138,7 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
             },
             createWebviewPanel() {
                 const listeners = new Set<() => void>();
+                const incoming = new Set<(message: unknown) => void>();
                 const panel = {
                     title: '',
                     disposed: false,
@@ -85,9 +146,25 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
                         html: '',
                         cspSource: 'vscode-webview://test',
                         options: {},
-                        postMessage() {},
-                        onDidReceiveMessage: disposable,
+                        postMessage(update: BoardUpdate) {
+                            updates.push(update);
+                            for (const notify of updateListeners)
+                                notify(update);
+                        },
+                        onDidReceiveMessage(
+                            callback: (message: unknown) => void,
+                        ) {
+                            incoming.add(callback);
+                            return {
+                                dispose: () => {
+                                    incoming.delete(callback);
+                                },
+                            };
+                        },
                         asWebviewUri: (value: unknown) => value,
+                    },
+                    receive(message: unknown) {
+                        for (const callback of incoming) callback(message);
                     },
                     onDidDispose(callback: () => void) {
                         listeners.add(callback);
@@ -117,8 +194,19 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
         Buffer,
         console,
         URL,
-        setTimeout,
-        clearTimeout,
+        Date: class extends Date {
+            static override now() {
+                return now;
+            }
+        },
+        setTimeout: (callback: () => void, delay: number) => {
+            const id = ++timerId;
+            timers.set(id, { callback, delay });
+            return id;
+        },
+        clearTimeout: (id: number) => {
+            timers.delete(id);
+        },
         require: (id: string) => {
             if (id === 'vscode') return api;
             if (id === 'node:fs/promises')
@@ -140,6 +228,13 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
     return {
         panels,
         messages,
+        updates,
+        get gatewayLookups() {
+            return gatewayLookups;
+        },
+        get pendingTimers() {
+            return timers.size;
+        },
         get initializes() {
             return initializes;
         },
@@ -156,6 +251,33 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
             assert.ok(refresh);
             await refresh();
             await new Promise((resolve) => setTimeout(resolve, 30));
+        },
+        runTimer(delay: number, advance = 0) {
+            const entry = [...timers].find(
+                ([, timer]) => timer.delay === delay,
+            );
+            assert.ok(entry, `${delay}ms後のタイマーが必要です`);
+            const [id, timer] = entry;
+            timers.delete(id);
+            now += advance;
+            timer.callback();
+        },
+        nextUpdate<T extends BoardUpdate>(
+            match: (update: BoardUpdate) => update is T,
+        ) {
+            return new Promise<T>((resolve, reject) => {
+                const listener = (update: BoardUpdate) => {
+                    if (!match(update)) return;
+                    updateListeners.delete(listener);
+                    clearTimeout(timeout);
+                    resolve(update);
+                };
+                const timeout = setTimeout(() => {
+                    updateListeners.delete(listener);
+                    reject(new Error('一覧の更新通知が届きませんでした'));
+                }, 2000);
+                updateListeners.add(listener);
+            });
         },
         close: async () => {
             for (const panel of panels) panel.dispose();
@@ -177,6 +299,57 @@ test('実activateの監視初期化失敗から再度開くと再試行し、未
     } finally {
         await app.close();
     }
+});
+
+test('ファイル通知なしの稼働期限切れを定期確認で検出し、古い行の操作を拒否する', async () => {
+    const app = await host('freshness');
+    try {
+        await app.open();
+        const ready = app.updates.find((update) => update.type === 'snapshot');
+        assert.equal(ready?.type, 'snapshot');
+        assert.equal(ready.snapshot.userActions?.status, 'ready');
+        const card = ready.snapshot.sections
+            .flatMap((section) => section.cards)
+            .find((row) => row.id === 'U1');
+        assert.ok(card);
+        const operation = card.operations.find(
+            (candidate) => candidate.operation === 'complete',
+        );
+        assert.ok(operation);
+
+        const closed = app.nextUpdate(
+            (update): update is Extract<BoardUpdate, { type: 'snapshot' }> =>
+                update.type === 'snapshot' &&
+                update.snapshot.userActions?.status === 'unavailable',
+        );
+        app.runTimer(5000, 31_000);
+        app.runTimer(120);
+        const unavailable = await closed;
+        assert.match(
+            unavailable.snapshot.warnings.join('\n'),
+            /稼働を確認できません/,
+        );
+        assert.equal(
+            unavailable.snapshot.userActions?.lastSuccessful?.viewVersion,
+            ready.snapshot.userActions?.viewVersion,
+        );
+        assert.equal(unavailable.snapshot.updatedAt, ready.snapshot.updatedAt);
+
+        const rejected = app.nextUpdate(
+            (update): update is Extract<BoardUpdate, { type: 'status' }> =>
+                update.type === 'status' && update.failed === true,
+        );
+        app.panels[0].receive({
+            ...operation,
+            type: 'operation',
+            status: 'ready',
+        });
+        assert.match((await rejected).message, /一覧の依頼が変わりました/);
+        assert.equal(app.gatewayLookups, 0);
+    } finally {
+        await app.close();
+    }
+    assert.equal(app.pendingTimers, 0);
 });
 
 for (const mode of ['removed', 'untrusted'] as const) {

@@ -39,10 +39,14 @@ board = mountBoard(
         window.__messages.push(message);
         if (message.type === 'refresh') {
             board?.update({ type: 'snapshot', snapshot: current });
+            const failed = current.userActions?.status === 'unavailable';
             board?.update({
                 type: 'status',
-                state: 'info',
-                message: 'プレビューを更新しました。台帳は変更していません。',
+                failed,
+                state: failed ? 'error' : 'info',
+                message: failed
+                    ? '依頼一覧を取得できていません。'
+                    : 'プレビューを更新しました。台帳は変更していません。',
             });
         } else if (message.type === 'operation') {
             board?.update({

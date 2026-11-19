@@ -20,6 +20,14 @@ import {
 } from '../src/boardHost.ts';
 import type { BoardSnapshot, BoardUpdate } from '../src/dashboardTypes.ts';
 import type { ActionGateway } from '../src/gateway.ts';
+import {
+    noOperations,
+    type RowState,
+    readyView,
+    viewRow,
+    waitingForDecision,
+    waitingForExecution,
+} from './viewFixture.ts';
 
 function snapshot(updatedAt = 1): BoardSnapshot {
     return {
@@ -265,23 +273,52 @@ test('現在の一覧にあるリンク・許可された行操作だけを受�
         }),
         false,
     );
+    board.userActions = {
+        status: 'unavailable',
+        viewVersion: null,
+        source: {
+            mode: 'legacy',
+            epoch: null,
+            fetchedAt: null,
+            error: { code: 'read-failed', message: '一覧を取得できません' },
+        },
+    };
+    const forged = parseBoardMessage({
+        type: 'operation',
+        operation: 'complete',
+        id: 'U1',
+        revision: 'a'.repeat(64),
+        status: 'ready',
+    });
+    assert.equal(forged?.type, 'operation');
+    assert.equal(hasBoardOperation(board, forged), false);
 });
 
-function operationFixture() {
+function operationFixture(
+    state: RowState = {
+        ...waitingForExecution,
+        operations: { ...noOperations, execute: true, complete: true },
+    },
+) {
     const row: Action = {
         id: 'U1',
         taskId: 'T1',
         text: '依頼',
-        kind: 'execution',
+        kind: state.kind,
         command: 'echo 済',
         done: false,
+        createdAt: 1,
     };
     const errors: string[] = [];
     let saved = false,
         picked = false;
     const gateway: ActionGateway = {
         root: '/fixture',
-        read: async () => ({ version: 1, actions: [row] }),
+        read: async () => ({
+            version: 1,
+            actions: [row],
+            userActions: readyView([viewRow(row, state)]),
+        }),
         complete: async () => {
             saved = true;
         },
@@ -349,8 +386,7 @@ test('一覧表示後に依頼が変われば別行の操作へ付け替えず�
     assert.match(f.errors[0], /一覧の依頼が更新/);
 });
 test('別依頼の未保存回答を一覧のクリック先へ取り違えない', async () => {
-    const f = operationFixture();
-    f.row.kind = 'decision';
+    const f = operationFixture(waitingForDecision);
     f.setDraft({
         id: 'U2',
         answer: '前の原文',

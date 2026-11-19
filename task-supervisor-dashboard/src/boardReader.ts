@@ -1,11 +1,20 @@
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Action, Registry } from './boardClient.ts';
+import { commonView, type Registry } from './boardClient.ts';
 import { projectBoard } from './boardModel.ts';
 import type { BoardSnapshot } from './dashboardTypes.ts';
 import type { ActionGateway } from './gateway.ts';
 import { readAuthority, runtimeRelative } from './runtimeFiles.ts';
-import type { Authority, RuntimeSnapshot } from './runtimeGateway.ts';
+import {
+    type Authority,
+    type RuntimeSnapshot,
+    snapshotRegistry,
+} from './runtimeGateway.ts';
+import {
+    parseUserActionsView,
+    UserActionsUnavailable,
+    type UserActionsView,
+} from './userActionsView.ts';
 
 const ledgerRelative = '.agents/ローカルタスク/監督';
 export const BOARD_FILES = [
@@ -84,6 +93,7 @@ async function stamp(path: string): Promise<string | undefined> {
 
 export class BoardReader {
     private seenAuthority = false;
+    private seenRuntime = false;
     private readonly observedFiles = new Set<string>();
     private readonly root: string;
     private readonly options: {
@@ -91,6 +101,7 @@ export class BoardReader {
         authoritySeen?: () => boolean;
         markAuthorityObserved?: (epoch: string) => Promise<void>;
         repoUrl?: string;
+        legacyView?: () => Promise<UserActionsView>;
     };
     constructor(
         root: string,
@@ -99,6 +110,7 @@ export class BoardReader {
             authoritySeen?: () => boolean;
             markAuthorityObserved?: (epoch: string) => Promise<void>;
             repoUrl?: string;
+            legacyView?: () => Promise<UserActionsView>;
         },
     ) {
         this.root = root;
@@ -199,62 +211,51 @@ export class BoardReader {
             return value;
         };
         let current: unknown;
-        if (authority) {
-            warnings.push(
-                '常駐部の孤立・稼働・待機・報告の詳細表示は次段階で対応します。この一覧だけで正常とは判定しません',
-            );
-            await load(`${runtimeRelative}/authority.json`);
+        let userActions: UserActionsView;
+        let source: BoardSnapshot['source'];
+        const runtimeExists = await stamp(
+            join(this.root, runtimeRelative, 'snapshot.json'),
+        );
+        if (authority || runtimeExists || this.seenRuntime) {
+            this.seenRuntime = true;
+            if (authority) await load(`${runtimeRelative}/authority.json`);
             const raw: unknown = JSON.parse(
                 (await load(`${runtimeRelative}/snapshot.json`)) ?? '',
             );
             if (
                 !isRecord(raw) ||
                 raw.schemaVersion !== 1 ||
-                raw.mode !== 'authoritative' ||
+                !['legacy', 'shadow', 'authoritative'].includes(
+                    String(raw.mode),
+                ) ||
                 typeof raw.generation !== 'string' ||
                 !Array.isArray(raw.tasks)
             )
                 throw new Error('常駐部の正本スナップショットの形式が不正です');
             registry(raw.registry);
             const runtime = raw as unknown as RuntimeSnapshot;
-            const latest = await (await this.options.gateway()).read();
-            const stripSelection = (actions: Action[]) =>
-                actions.map(({ runtime: _runtime, ...action }) => action);
-            if (
-                JSON.stringify(stripSelection(latest.actions)) !==
-                JSON.stringify(stripSelection(runtime.registry.actions))
-            )
-                throw new ChangedWhileReading();
-            for (const action of latest.actions) {
-                const task = runtime.tasks.find(
-                    (task) => task.id === action.taskId,
+            if (!authority && runtime.mode === 'authoritative') {
+                this.seenAuthority = true;
+                await this.options.markAuthorityObserved?.(
+                    'snapshot-authoritative',
                 );
-                if (
-                    action.runtime &&
-                    (action.runtime.epoch !== authority.epoch ||
-                        action.runtime.taskId !== task?.id ||
-                        action.runtime.version !== task?.version)
-                )
-                    throw new ChangedWhileReading();
-                if (
-                    task &&
-                    Number.isSafeInteger(task.version) &&
-                    task.version >= 0 &&
-                    !action.runtime
-                )
-                    throw new Error('常駐部の操作対象の版を取得できません');
+                throw new Error(
+                    '正本スナップショットに対応する切替記録が消失しました。旧台帳へ戻しません',
+                );
             }
-            current = { ...runtime.registry, actions: latest.actions };
+            if (authority && runtime.mode !== 'authoritative')
+                throw new Error(
+                    '常駐部の正本スナップショットのモードが一致しません',
+                );
+            const selected = snapshotRegistry(runtime, authority?.epoch);
+            userActions = commonView(selected);
+            current = { ...runtime.registry, ...selected };
+            source = runtime.mode;
             const heartbeatText = await load(
                 `${runtimeRelative}/heartbeat.json`,
-                true,
             );
-            if (heartbeatText === undefined) {
-                warnings.push(
-                    '常駐部の稼働を確認できません。保存済みスナップショットを参考表示しています',
-                );
-            } else {
-                const heartbeat: unknown = JSON.parse(heartbeatText);
+            {
+                const heartbeat: unknown = JSON.parse(heartbeatText ?? '');
                 if (
                     !isRecord(heartbeat) ||
                     heartbeat.schemaVersion !== 1 ||
@@ -266,10 +267,11 @@ export class BoardReader {
                 if (
                     age < 0 ||
                     age > HEARTBEAT_MAX_AGE_MS ||
-                    heartbeat.generation !== raw.generation
+                    heartbeat.generation !== raw.generation ||
+                    heartbeat.snapshotError
                 )
-                    warnings.push(
-                        '常駐部の稼働記録が古いか現在の状態と一致しません。保存済みスナップショットを参考表示しています',
+                    throw new Error(
+                        '常駐部の稼働を確認できません。稼働記録の時刻・世代・スナップショット保存結果を確認してください',
                     );
             }
         } else {
@@ -277,6 +279,24 @@ export class BoardReader {
                 (await load(`${ledgerRelative}/registry.json`)) ?? '',
             );
             registry(current);
+            const view = this.options.legacyView
+                ? parseUserActionsView(await this.options.legacyView())
+                : commonView(await (await this.options.gateway()).read());
+            if (view.status === 'unavailable')
+                throw new UserActionsUnavailable(view);
+            if (view.source.mode !== 'legacy' || view.source.epoch !== null)
+                throw new Error(
+                    '旧台帳の共通一覧と正本のモード・世代が一致しません',
+                );
+            userActions = view;
+            current = {
+                ...current,
+                actions: view.rows.map(({ action }) => {
+                    const { runtime: _runtime, ...raw } = action;
+                    return raw;
+                }),
+            };
+            source = 'legacy';
         }
         const [state, archive, eventText] = await Promise.all([
             object('state.json', { facts: {} }),
@@ -296,11 +316,12 @@ export class BoardReader {
             throw new ChangedWhileReading();
         return projectBoard({
             registry: current,
+            userActions,
             archive,
             state,
             events: history,
             updatedAt: Math.max(...modificationTimes),
-            source: authority ? 'authoritative' : 'legacy',
+            source,
             readWarnings: warnings,
             repoUrl: this.options.repoUrl,
         });
