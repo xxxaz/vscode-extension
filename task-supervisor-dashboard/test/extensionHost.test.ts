@@ -4,12 +4,15 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
-    entryPoints: [new URL('../src/extension.ts', import.meta.url).pathname],
+    entryPoints: [
+        fileURLToPath(new URL('../src/extension.ts', import.meta.url)),
+    ],
     platform: 'node',
     format: 'cjs',
     bundle: true,
@@ -148,6 +151,12 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
             assert.ok(open);
             await open();
         },
+        refresh: async () => {
+            const refresh = commands.get('xxxaz.task-supervisor.refresh');
+            assert.ok(refresh);
+            await refresh();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+        },
         close: async () => {
             for (const panel of panels) panel.dispose();
             for (const subscription of subscriptions) subscription.dispose();
@@ -179,6 +188,8 @@ for (const mode of ['removed', 'untrusted'] as const) {
             assert.equal(app.panels[0].webview.html, '');
             assert.equal(app.reads, 0);
             assert.equal(app.messages.length, 1);
+            await app.refresh();
+            assert.equal(app.reads, 0);
         } finally {
             await app.close();
         }

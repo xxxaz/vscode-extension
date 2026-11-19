@@ -56,6 +56,17 @@ export function activate(context: vscode.ExtensionContext): void {
         folders().length === 1
             ? folders()[0]
             : vscode.window.showWorkspaceFolderPick();
+    const assertCurrentFolder = (folder: vscode.WorkspaceFolder): void => {
+        if (
+            !vscode.workspace.isTrusted ||
+            !folders().some(
+                (current) => current.uri.toString() === folder.uri.toString(),
+            )
+        )
+            throw new Error(
+                '対象フォルダーが閉じられたか、ワークスペースの信頼が解除されました',
+            );
+    };
     const gatewayFor = async (folder: vscode.WorkspaceFolder) => {
         const config = vscode.workspace.getConfiguration(
             'taskSupervisor',
@@ -128,10 +139,12 @@ export function activate(context: vscode.ExtensionContext): void {
             const entry: Entry = {
                 folder,
                 views: 0,
-                feed: new BoardFeed(async () => ({
-                    ...(await reader.read()),
-                    workspace: folder.name,
-                })),
+                feed: new BoardFeed(async () => {
+                    assertCurrentFolder(folder);
+                    const snapshot = await reader.read();
+                    assertCurrentFolder(folder);
+                    return { ...snapshot, workspace: folder.name };
+                }),
             };
             const watcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(
@@ -362,15 +375,7 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         const entry = await entryFor(folder);
         if (closed) return;
-        if (
-            !vscode.workspace.isTrusted ||
-            !folders().some(
-                (current) => current.uri.toString() === folder.uri.toString(),
-            )
-        )
-            throw new Error(
-                '対象フォルダーが閉じられたか、ワークスペースの信頼が解除されました',
-            );
+        assertCurrentFolder(folder);
         const webview = owner.webview;
         entry.views++;
         const send = (message: BoardUpdate) => {
