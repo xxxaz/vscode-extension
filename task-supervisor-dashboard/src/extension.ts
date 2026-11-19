@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { record, type Interaction } from './actions.ts';
 import { Ledger, boardRunner, type Operation } from './boardClient.ts';
+import { captureAnswer } from './answerEditor.ts';
 
 export function activate(context: vscode.ExtensionContext): void {
     let busy = false;
@@ -109,6 +110,28 @@ export function activate(context: vscode.ExtensionContext): void {
                         value,
                         ignoreFocusOut: true,
                     }),
+                answerInput: async (initial) =>
+                    captureAnswer(
+                        {
+                            open: async (content) =>
+                                vscode.workspace.openTextDocument({
+                                    language: 'plaintext',
+                                    content,
+                                }),
+                            show: async (document) => {
+                                await vscode.window.showTextDocument(document, {
+                                    preview: false,
+                                });
+                            },
+                            confirm: async () =>
+                                (await vscode.window.showInformationMessage(
+                                    '開いた無題のテキストへ回答を入力し、この通知の「回答を確認」を押してください。ファイル保存は不要です。',
+                                    '回答を確認',
+                                    '取消'
+                                )) === '回答を確認',
+                        },
+                        initial
+                    ),
                 confirm: async (message, detail) =>
                     (await vscode.window.showWarningMessage(
                         message,

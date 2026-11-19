@@ -11,6 +11,7 @@ import {
     type Registry,
 } from '../src/boardClient.ts';
 import { record, type Interaction } from '../src/actions.ts';
+import { captureAnswer } from '../src/answerEditor.ts';
 
 const action = (extra: Partial<Action> = {}): Action => ({
     id: 'U1',
@@ -36,7 +37,7 @@ async function setup(a: Action) {
     const infos: string[] = [];
     const errors: string[] = [];
     const draft = new Map<string, PendingAnswer>();
-    let inputs = ['原文\nそのまま', '利用者'];
+    let inputs = ['利用者'];
     let commandId = '';
     const run = async (args: string[]): Promise<string> => {
         calls.push(args);
@@ -71,6 +72,7 @@ async function setup(a: Action) {
         choice: async () => 'custom',
         recover: async () => 'retry',
         input: async () => inputs.shift(),
+        answerInput: async (initial) => initial ?? '原文\nそのまま',
         confirm: async () => true,
         info: (m) => {
             infos.push(m);
@@ -232,4 +234,83 @@ test('回答失敗後の再送では原文と操作IDを保持する', async () 
     const retry = f.calls.filter((a) => a[0] === 'answer')[1];
     assert.deepEqual(retry, first);
     assert.equal(f.draft.size, 0);
+});
+
+test('自由原文は無題エディターのgetTextから改行と空白を変えずに受け取る', async () => {
+    const raw = '  一行目\n二行目\r\n三行目  ';
+    const order: string[] = [];
+    const result = await captureAnswer(
+        {
+            open: async (content) => {
+                assert.equal(content, '前の下書き');
+                order.push('open');
+                return { getText: () => raw };
+            },
+            show: async () => {
+                order.push('show');
+            },
+            confirm: async () => {
+                order.push('confirm');
+                return true;
+            },
+        },
+        '前の下書き'
+    );
+    assert.equal(result, raw);
+    assert.deepEqual(order, ['open', 'show', 'confirm']);
+    assert.equal(
+        await captureAnswer({
+            open: async () => ({
+                getText: () => {
+                    throw Error('取消で読み取らない');
+                },
+            }),
+            show: async () => {},
+            confirm: async () => false,
+        }),
+        undefined
+    );
+});
+test('結果確認不要の実行依頼もキック候補に含める', async () => {
+    await using f = await setup(action({ needsOk: false }));
+    assert.equal(candidates(f.registry, 'ran').length, 1);
+    await record('ran', f.ledger, f.ui, f.drafts);
+    assert.deepEqual(f.calls, [['ran', 'U1']]);
+    assert.equal(f.a.done, false);
+});
+test('URL資料版は入力開始時に取得し両CLIへ同じ値を渡す', async () => {
+    await using f = await setup(
+        action({
+            kind: 'decision',
+            doc: 'https://example.com/decision',
+            command: undefined,
+        })
+    );
+    f.inputs.splice(0, f.inputs.length, '改訂2', '利用者');
+    await record('answer', f.ledger, f.ui, f.drafts);
+    assert.deepEqual(f.calls[0], [
+        'answer-context',
+        'U1',
+        '--document-version',
+        '改訂2',
+    ]);
+    const args = f.calls[1];
+    assert.equal(args[args.indexOf('--document-version') + 1], '改訂2');
+    assert.equal(f.errors.length, 0);
+});
+test('URL資料版の取消と空欄では回答を送信しない', async () => {
+    await using f = await setup(
+        action({
+            kind: 'decision',
+            doc: 'https://example.com/decision',
+            command: undefined,
+        })
+    );
+    f.ui.input = async () => undefined;
+    await record('answer', f.ledger, f.ui, f.drafts);
+    assert.deepEqual(f.calls, []);
+    f.ui.input = async () => '';
+    await record('answer', f.ledger, f.ui, f.drafts);
+    assert.match(f.errors[0], /確認した版/);
+    assert.deepEqual(f.calls, []);
 });

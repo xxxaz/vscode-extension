@@ -12,6 +12,7 @@ export interface Interaction {
     choice(): Promise<'recommended' | 'custom' | undefined>;
     recover(): Promise<'retry' | 'edit' | undefined>;
     input(title: string, value?: string): Promise<string | undefined>;
+    answerInput(initial?: string): Promise<string | undefined>;
     confirm(message: string, detail: string): Promise<boolean>;
     info(message: string): void;
     error(message: string): void;
@@ -59,7 +60,7 @@ export async function record(
         if (!rows.length) {
             ui.info(
                 operation === 'ran'
-                    ? 'キック済みを記録できる依頼はありません。現行CLIは結果確認が必要な実行依頼だけに対応します'
+                    ? 'キック済みを記録できる未完了の実行依頼はありません'
                     : 'この操作の対象となる未完了の依頼はありません'
             );
             return;
@@ -102,7 +103,7 @@ export async function record(
         const answer =
             mode === 'recommended'
                 ? '推奨で進める'
-                : await ui.input(`${row.id} の回答原文`, previous?.answer);
+                : await ui.answerInput(previous?.answer);
         if (answer === undefined) return;
         if (!answer.trim())
             throw new Error('空白以外を含む回答を入力してください');

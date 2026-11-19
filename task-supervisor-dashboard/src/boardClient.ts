@@ -66,7 +66,7 @@ export function candidates(r: Registry, operation: Operation): Action[] {
             operation === 'answer'
                 ? kind(a) === 'decision' && !!a.taskId
                 : kind(a) === 'execution' &&
-                  (operation !== 'ran' || (a.needsOk && a.ranAt === undefined))
+                  (operation !== 'ran' || a.ranAt === undefined)
         )
         .sort(
             (a, b) =>
