@@ -471,9 +471,14 @@ test('Webviewはnonce付きのCSSとscriptだけを許可しHTML属性をエス�
             'x" onload="bad',
             'x" onload="bad',
             'x"><img src=x onerror=bad>',
+            'file:///x"><img src=x onerror=bad>',
         ),
     );
     try {
+        assert.equal(
+            unsafe.window.document.getElementById('board')?.dataset.workspaceUri,
+            'file:///x"><img src=x onerror=bad>',
+        );
         assert.equal(
             unsafe.window.document.querySelectorAll('img,[onload],[onerror]')
                 .length,

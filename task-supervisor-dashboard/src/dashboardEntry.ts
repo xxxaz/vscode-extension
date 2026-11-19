@@ -9,7 +9,17 @@ declare function acquireVsCodeApi(): {
 const api = acquireVsCodeApi();
 const host = document.getElementById('board');
 if (!host) throw new Error('一覧の表示領域がありません');
-const board = mountBoard(host, (message) => api.postMessage(message), api);
+const workspaceUri = host.dataset.workspaceUri;
+const state = {
+    getState: () => api.getState(),
+    setState: (value: unknown) =>
+        api.setState({
+            ...(value && typeof value === 'object' ? value : {}),
+            ...(workspaceUri ? { workspaceUri } : {}),
+        }),
+};
+state.setState(api.getState());
+const board = mountBoard(host, (message) => api.postMessage(message), state);
 window.addEventListener('message', (event) =>
     board.update(event.data as BoardUpdate),
 );

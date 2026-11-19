@@ -2,7 +2,7 @@
     "name": "task-supervisor-dashboard",
     "displayName": "Task Supervisor",
     "description": "監督台帳の依頼・タスク・通知を一覧表示し、行から完了・キック済み・回答を記録する",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "publisher": "xxxaz",
     "license": "MIT",
     "repository": {
@@ -30,7 +30,7 @@
         "commands": [
             {
                 "command": "xxxaz.task-supervisor.open",
-                "title": "進行中タスクの一覧を開く",
+                "title": "監督のダッシュボードを開く",
                 "category": "Task Supervisor",
                 "icon": "$(open-in-editor)"
             },
@@ -120,5 +120,8 @@
         "esbuild": "^0.28.0",
         "jsdom": "^26.1.0",
         "typescript": "^6.0.3"
-    }
+    },
+    "activationEvents": [
+        "onWebviewPanel:xxxaz.task-supervisor.dashboard"
+    ]
 }

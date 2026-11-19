@@ -9,6 +9,7 @@ const dom = new JSDOM(
         'https://preview.invalid',
         'smoke',
         'https://preview.invalid/dashboard.js',
+        'file:///workspace/監督',
     ),
     { runScripts: 'outside-only', pretendToBeVisual: true },
 );
@@ -18,10 +19,19 @@ using _cleanup = {
     },
 };
 const messages: BoardMessage[] = [];
+let saved: unknown = {
+    version: 1,
+    query: '配布',
+    cards: { T1: true },
+    sections: { tasks: true },
+    scrollTop: 120,
+};
 Object.assign(dom.window, {
     acquireVsCodeApi: () => ({
-        getState: () => undefined,
-        setState: () => {},
+        getState: () => saved,
+        setState: (value: unknown) => {
+            saved = value;
+        },
         postMessage: (value: BoardMessage) => messages.push(value),
     }),
 });
@@ -67,4 +77,75 @@ assert.match(
     /配布JSから一覧を表示/,
 );
 assert.ok(dom.window.document.querySelector('[data-card-id="T1"]'));
-console.log('配布HTMLとバンドルJSの接続・一覧表示が成功しました');
+assert.equal(
+    dom.window.document.querySelector<HTMLDetailsElement>('[data-card-id="T1"]')
+        ?.open,
+    true,
+);
+assert.equal(
+    dom.window.document.querySelector<HTMLInputElement>('.filter')?.value,
+    '配布',
+);
+assert.equal(
+    (saved as { workspaceUri: string }).workspaceUri,
+    'file:///workspace/監督',
+);
+const filter = dom.window.document.querySelector<HTMLInputElement>('.filter');
+assert.ok(filter);
+filter.value = '配布JS';
+filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+assert.equal(
+    (saved as { workspaceUri: string }).workspaceUri,
+    'file:///workspace/監督',
+);
+const restored = new JSDOM(
+    boardHtml(
+        'https://preview.invalid',
+        'smoke',
+        'https://preview.invalid/dashboard.js',
+        'file:///workspace/監督',
+    ),
+    { runScripts: 'outside-only', pretendToBeVisual: true },
+);
+try {
+    Object.assign(restored.window, {
+        acquireVsCodeApi: () => ({
+            getState: () => saved,
+            setState: (value: unknown) => {
+                saved = value;
+            },
+            postMessage: () => {},
+        }),
+    });
+    restored.window.eval(
+        await readFile(
+            new URL('../dist/dashboard.js', import.meta.url),
+            'utf8',
+        ),
+    );
+    restored.window.dispatchEvent(
+        new restored.window.MessageEvent('message', {
+            data: { type: 'snapshot', snapshot },
+        }),
+    );
+    assert.equal(
+        restored.window.document.querySelector<HTMLInputElement>('.filter')
+            ?.value,
+        '配布JS',
+    );
+    assert.equal(
+        restored.window.document.querySelector<HTMLDetailsElement>(
+            '[data-card-id="T1"]',
+        )?.open,
+        true,
+    );
+    assert.equal(
+        (saved as { workspaceUri: string }).workspaceUri,
+        'file:///workspace/監督',
+    );
+} finally {
+    restored.window.close();
+}
+console.log(
+    '配布HTML/JSの一覧表示と、復元用ルート・検索・展開の保存が成功しました',
+);

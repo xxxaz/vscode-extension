@@ -15,6 +15,7 @@ export function boardHtml(
     cspSource: string,
     nonce: string,
     scriptUri: string,
+    workspaceUri = '',
 ): string {
     const safeNonce = escapeAttribute(nonce);
     const source = escapeAttribute(cspSource);
@@ -85,5 +86,5 @@ code { font-family: var(--vscode-editor-font-family, ui-monospace, monospace); f
 .section-empty, .board-empty { color: var(--muted); padding: 18px 0; }
 @media (max-width: 520px) { .board { padding: 14px 12px 32px; } h1 { font-size: 1.3rem; } .heading-row { gap: 8px; } .field { display: block; } dt { margin-bottom: 5px; } .card-summary { padding: 10px; } .card-body { padding: 2px 10px 12px; } .counts { gap: 6px 10px; } .refresh, .operation { padding: 5px 9px; } }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
-</style></head><body><div id="board"></div><script nonce="${safeNonce}" src="${escapeAttribute(scriptUri)}"></script></body></html>`;
+</style></head><body><div id="board" data-workspace-uri="${escapeAttribute(workspaceUri)}"></div><script nonce="${safeNonce}" src="${escapeAttribute(scriptUri)}"></script></body></html>`;
 }

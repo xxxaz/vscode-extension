@@ -17,6 +17,7 @@ import {
     resolveBoardTarget,
 } from './boardHost.ts';
 import { BOARD_FILES, BoardReader } from './boardReader.ts';
+import { registerDashboardPanels } from './dashboardPanels.ts';
 import type { BoardUpdate } from './dashboardTypes.ts';
 import { boardHtml } from './dashboardWebview.ts';
 
@@ -28,7 +29,6 @@ export function activate(context: vscode.ExtensionContext): void {
         views: number;
     };
     const entries = new Map<string, Promise<Entry>>();
-    const panels = new Map<string, vscode.WebviewPanel>();
     let lastStatus: Extract<BoardUpdate, { type: 'status' }> = {
         type: 'status',
         message: '一覧の依頼から操作できます。',
@@ -340,24 +340,29 @@ export function activate(context: vscode.ExtensionContext): void {
     ): Promise<void> => {
         if (!vscode.workspace.isTrusted)
             throw new Error('信頼したワークスペースで一覧を開いてください');
-        const entry = await entryFor(folder);
-        const webview = owner.webview;
         const subscriptions: vscode.Disposable[] = [];
         let closed = false;
+        let cleanup = () => {};
+        subscriptions.push(
+            owner.onDidDispose(() => {
+                closed = true;
+                cleanup();
+                for (const subscription of subscriptions)
+                    subscription.dispose();
+            }),
+        );
+        const entry = await entryFor(folder);
+        if (closed) return;
+        const webview = owner.webview;
         entry.views++;
         const send = (message: BoardUpdate) => {
             if (!closed) void webview.postMessage(message);
         };
         const unsubscribe = entry.feed.subscribe(send);
-        subscriptions.push(
-            owner.onDidDispose(() => {
-                closed = true;
-                entry.views--;
-                unsubscribe();
-                for (const subscription of subscriptions)
-                    subscription.dispose();
-            }),
-        );
+        cleanup = () => {
+            entry.views--;
+            unsubscribe();
+        };
         subscriptions.push(
             webview.onDidReceiveMessage((value: unknown) => {
                 void (async () => {
@@ -447,35 +452,24 @@ export function activate(context: vscode.ExtensionContext): void {
                     ),
                 )
                 .toString(),
+            folder.uri.toString(),
         );
         await entry.feed.refresh();
     };
     context.subscriptions.push(
-        vscode.commands.registerCommand(
-            'xxxaz.task-supervisor.open',
-            async () => {
-                try {
-                    const folder = await chooseFolder();
-                    if (!folder) return;
-                    const existing = panels.get(folder.uri.fsPath);
-                    if (existing) {
-                        existing.reveal();
-                        return;
-                    }
-                    const panel = vscode.window.createWebviewPanel(
-                        'xxxaz.task-supervisor.dashboard',
-                        `進行中タスク — ${folder.name}`,
-                        vscode.ViewColumn.One,
-                        { enableScripts: true, retainContextWhenHidden: true },
-                    );
-                    panels.set(folder.uri.fsPath, panel);
-                    panel.onDidDispose(() => panels.delete(folder.uri.fsPath));
-                    await attach(panel, folder);
-                } catch (error) {
-                    status(`一覧を開けませんでした: ${String(error)}`, true);
-                }
+        ...registerDashboardPanels({
+            window: vscode.window,
+            registerCommand: vscode.commands.registerCommand,
+            column: vscode.ViewColumn.One,
+            chooseFolder,
+            folders,
+            attach,
+            onError: (error) => {
+                const message = `ダッシュボードを開けませんでした: ${String(error)}`;
+                status(message, true);
+                void vscode.window.showErrorMessage(message);
             },
-        ),
+        }),
     );
     context.subscriptions.push(
         vscode.commands.registerCommand('xxxaz.task-supervisor.refresh', () => {

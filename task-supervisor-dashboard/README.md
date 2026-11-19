@@ -1,11 +1,13 @@
 # Task Supervisor
 
-監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。Markdownへは書き戻しません。
+監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。Markdownへは書き戻しません。
 更新日: 2026-11-19。
 
 ## 一覧を開く
 
-コマンドパレットで **Task Supervisor: 進行中タスクの一覧を開く** を実行します。エクスプローラーの **監督の一覧** にも同じ内容を表示します。サイドバー右上の「一覧を開く」で広いエディター領域へ移れます。
+コマンドパレットで **Task Supervisor: 監督のダッシュボードを開く** を実行します。エクスプローラーの **監督の一覧** にも同じ内容を表示します。中央のエディタータブが主表示です。サイドバー右上の「監督のダッシュボードを開く」からも開けます。既に開いている場合は同じタブを表示します。タブは通常のエディターと同様に別のグループへ移動できます。
+
+タブを開いたままウィンドウを閉じるかReload Windowすると、同じワークスペースのタブを復元します。検索・開いた区分/行・スクロール位置も保存します。閉じたタブを自動で開き直すことはありません。保存されたルートが現ワークスペースにない場合は別の台帳へ接続せず、エラーを表示します。
 
 先頭に更新時刻・件数・監督へのリンクと区分の案内を表示します。検索はID・本文・状態・詳細を対象にします。行は要約を表示し、開くと全文と関連情報が見られます。
 
@@ -71,27 +73,28 @@ npm run test:board-parity -- <task-supervisorのディレクトリ> <workspace-r
 手動導入では、VS Codeを動かす環境の端末で次を実行します。コンテナの構成へ入れる前にもVSIXから試せます。
 
 ```sh
-code --install-extension <task-supervisor-dashboard-0.2.0.vsixのパス> --force
+code --install-extension <task-supervisor-dashboard-0.2.1.vsixのパス> --force
 ```
 
-導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 進行中タスクの一覧を開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
+導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 監督のダッシュボードを開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
 
-既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.2.0` タグでRelease workflowが `task-supervisor-dashboard-0.2.0.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
+既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.2.1` タグでRelease workflowが `task-supervisor-dashboard-0.2.1.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
 
 ## 実装の配置
 
-| ファイル                                                   | 責務                                                |
-| ---------------------------------------------------------- | --------------------------------------------------- |
-| `src/extension.ts`                                         | VS Codeの入口・監視・一覧と操作の接続               |
-| `src/boardReader.ts`                                       | 4原票と常駐正本の読取り・整合確認                   |
-| `src/boardModel.ts`                                        | 分類・並び・全表示項目の純粋な投影                  |
-| `src/boardFeed.ts`                                         | 更新の集約・直列読取り・失敗時の表示保持            |
-| `src/dashboardTypes.ts`                                    | 表示データと固定メッセージの契約                    |
-| `src/dashboardClient.ts`                                   | キー付きDOMの差分更新と状態保持                     |
-| `src/dashboardWebview.ts` / `dashboardEntry.ts`            | テーマとCSP・バンドル入口                           |
-| `src/actions.ts` / `answerEditor.ts`                       | 確認と原文入力・行指定・回答の保持                  |
-| `src/boardClient.ts` / `gateway.ts`                        | 既存台帳CLIと共通の操作ポート                       |
-| `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts` | 正本選択・契約v1操作・結果の照会                    |
-| `test/`                                                    | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー |
+| ファイル                                                   | 責務                                                         |
+| ---------------------------------------------------------- | ------------------------------------------------------------ |
+| `src/extension.ts`                                         | VS Codeの入口・監視・一覧と操作の接続                        |
+| `src/dashboardPanels.ts`                                   | 中央タブの再利用・Serializerによる同じワークスペースへの復元 |
+| `src/boardReader.ts`                                       | 4原票と常駐正本の読取り・整合確認                            |
+| `src/boardModel.ts`                                        | 分類・並び・全表示項目の純粋な投影                           |
+| `src/boardFeed.ts`                                         | 更新の集約・直列読取り・失敗時の表示保持                     |
+| `src/dashboardTypes.ts`                                    | 表示データと固定メッセージの契約                             |
+| `src/dashboardClient.ts`                                   | キー付きDOMの差分更新と状態保持                              |
+| `src/dashboardWebview.ts` / `dashboardEntry.ts`            | テーマとCSP・バンドル入口                                    |
+| `src/actions.ts` / `answerEditor.ts`                       | 確認と原文入力・行指定・回答の保持                           |
+| `src/boardClient.ts` / `gateway.ts`                        | 既存台帳CLIと共通の操作ポート                                |
+| `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts` | 正本選択・契約v1操作・結果の照会                             |
+| `test/`                                                    | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー          |
 
 本文はテキストノードとして表示し、Webviewから実行ファイル・任意のCLI引数・任意URLを受け付けません。リンクも現在の表示にあるIDから解決します。CSPはnonce付きの固定スクリプトとCSSに限定します。
