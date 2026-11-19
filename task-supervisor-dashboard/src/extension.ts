@@ -1,9 +1,9 @@
-import * as vscode from 'vscode';
-import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { record, type Interaction } from './actions.ts';
-import { Ledger, boardRunner, type Operation } from './boardClient.ts';
+import * as vscode from 'vscode';
+import { type Interaction, record } from './actions.ts';
 import { captureAnswer } from './answerEditor.ts';
+import { createGateway } from './backend.ts';
+import type { Operation } from './boardClient.ts';
 
 export function activate(context: vscode.ExtensionContext): void {
     let busy = false;
@@ -14,13 +14,13 @@ export function activate(context: vscode.ExtensionContext): void {
     const perform = async (operation: Operation): Promise<void> => {
         if (!vscode.workspace.isTrusted) {
             void vscode.window.showErrorMessage(
-                '信頼したワークスペースで実行してください'
+                '信頼したワークスペースで実行してください',
             );
             return;
         }
         if (busy) {
             void vscode.window.showInformationMessage(
-                '前の記録操作が終わるまでお待ちください'
+                '前の記録操作が終わるまでお待ちください',
             );
             return;
         }
@@ -30,7 +30,7 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
             const folders =
                 vscode.workspace.workspaceFolders?.filter(
-                    (f) => f.uri.scheme === 'file'
+                    (f) => f.uri.scheme === 'file',
                 ) ?? [];
             const folder =
                 folders.length === 1
@@ -43,12 +43,26 @@ export function activate(context: vscode.ExtensionContext): void {
             const root = folder.uri.fsPath;
             const config = vscode.workspace.getConfiguration(
                 'taskSupervisor',
-                folder.uri
+                folder.uri,
             );
-            const run = boardRunner(
+            const nodePath = config.get<string>('nodePath');
+            const boardPath = config.get<string>('boardPath');
+            const runtimeCliPath = config.get<string>('runtimeCliPath');
+            if (!nodePath || !boardPath || !runtimeCliPath)
+                throw new Error(
+                    'NodeとCLIのパスをマシン設定で確認してください',
+                );
+            const gateway = await createGateway(
                 root,
-                config.get<string>('nodePath')!,
-                resolve(root, config.get<string>('boardPath')!)
+                nodePath,
+                boardPath,
+                runtimeCliPath,
+                {
+                    get: (key) => context.workspaceState.get(key),
+                    set: async (key, value) => {
+                        await context.workspaceState.update(key, value);
+                    },
+                },
             );
             const ui: Interaction = {
                 pick: async (actions, op) =>
@@ -69,7 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
                                           : '完了にする依頼',
                                 matchOnDescription: true,
                                 matchOnDetail: true,
-                            }
+                            },
                         )
                     )?.action,
                 choice: async () =>
@@ -85,7 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
                                     value: 'custom' as const,
                                 },
                             ],
-                            { title: '回答の種類' }
+                            { title: '回答の種類' },
                         )
                     )?.value,
                 recover: async () =>
@@ -101,7 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
                                     value: 'edit' as const,
                                 },
                             ],
-                            { title: '前回の未保存回答があります' }
+                            { title: '前回の未保存回答があります' },
                         )
                     )?.value,
                 input: async (title, value) =>
@@ -127,16 +141,16 @@ export function activate(context: vscode.ExtensionContext): void {
                                 (await vscode.window.showInformationMessage(
                                     '開いた無題のテキストへ回答を入力し、この通知の「回答を確認」を押してください。ファイル保存は不要です。',
                                     '回答を確認',
-                                    '取消'
+                                    '取消',
                                 )) === '回答を確認',
                         },
-                        initial
+                        initial,
                     ),
                 confirm: async (message, detail) =>
                     (await vscode.window.showWarningMessage(
                         message,
                         { modal: true, detail },
-                        '記録する'
+                        '記録する',
                     )) === '記録する',
                 info: (message) => {
                     reported = true;
@@ -149,7 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
                     void vscode.window.showErrorMessage(message);
                 },
             };
-            await record(operation, new Ledger(root, run), ui, {
+            await record(operation, gateway, ui, {
                 get: (key) => context.workspaceState.get(key),
                 set: async (key, value) => {
                     await context.workspaceState.update(key, value);
@@ -169,8 +183,8 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions.push(
             vscode.commands.registerCommand(
                 `xxxaz.task-supervisor.${operation}`,
-                () => perform(operation)
-            )
+                () => perform(operation),
+            ),
         );
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
@@ -196,14 +210,14 @@ export function activate(context: vscode.ExtensionContext): void {
                                         message.operation === 'answer')
                                 )
                                     void perform(message.operation);
-                            }
-                        )
+                            },
+                        ),
                     );
                     current.onDidDispose(() => {
                         if (view === current) view = undefined;
                     });
                 },
-            }
-        )
+            },
+        ),
     );
 }

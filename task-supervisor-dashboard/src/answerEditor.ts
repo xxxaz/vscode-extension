@@ -8,7 +8,7 @@ export interface AnswerEditor<Document extends AnswerDocument> {
 }
 export async function captureAnswer<Document extends AnswerDocument>(
     editor: AnswerEditor<Document>,
-    initial = ''
+    initial = '',
 ): Promise<string | undefined> {
     const document = await editor.open(initial);
     await editor.show(document);

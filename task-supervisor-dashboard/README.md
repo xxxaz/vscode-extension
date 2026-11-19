@@ -21,16 +21,27 @@
 
 ## 必要な環境
 
-信頼したローカルワークスペースで、ルートの `.agents/ローカルタスク/監督/registry.json` を読みます。
+信頼したローカルワークスペースで使います。常駐部への切替前は、ルートの `.agents/ローカルタスク/監督/registry.json` を読みます。
 拡張はワークスペース側で動作します。DevContainerへ接続した場合はDevContainer内でCLIを実行します。
 
 - `taskSupervisor.nodePath`: TypeScriptを直接実行できるNode 24以降。初期値は `/usr/local/bin/node` です。手元のVS Codeで試す場合はローカルのNodeのパスをマシン設定へ指定してください。
 - `taskSupervisor.boardPath`: 信頼した共通 `board.ts` のルート相対パス。初期値は `.claude/worktrees/supervisor-watch/.agents/skills/task-supervisor/board.ts` です。
+- `taskSupervisor.runtimeCliPath`: 契約v1の常駐受付CLI。初期値は `.agents/skills/task-supervisor/runtime/cli.ts` です。
 
 子プロセスの `CLAUDE_PROJECT_DIR` は選択したルートへ固定します。別の台帳へ書き込まないよう、表示と記録のルートを一致させます。
 回答には `answer-context` と `answer` に対応したCLIが必要です。古いCLIでは回答を保存せずエラーにします。回答を `done` や `edit --text` で代用しません。
 完了・キック済みは既存CLIの検証を再利用します。保存前に依頼を読み直しますが、旧CLIには原子的な版照合・永続的な操作IDの重複排除がありません。
 回答の版照合と同一IDの再送制御は回答CLIが行います。
+
+## 常駐部への切替
+
+操作UIは共通の `ActionGateway` を使います。`runtime/authority.json` がない切替前は既存CLI、`authoritative` では常駐CLIへ接続します。`preparing`・記録破損・一度観測した切替記録の消失では変更を拒否します。常駐CLIの停止や未対応を理由に既存CLIへ自動で戻りません。
+
+常駐経路はスナップショットのタスク版を選択時に固定し、`action.complete`・`action.executed`・`action.answer` を型付きの封筒で `submit` へ渡します。回答は `answer-context` が同時に返す依頼版とタスク版を照合します。入力後の版を自動で付け替えません。
+
+操作ID・原文・受付結果をワークスペース状態へ保持します。「受付済み・適用結果待ち」は成功と区別して表示し、次の操作時に同じIDの結果を確認します。受付前の通信失敗も同じ内容・IDで再送します。適用済みは担当の受領・処理完了とは別です。結果ファイルはCLIが返した対象ルート内のパスだけを読み、SQLiteを直接開きません。
+
+常駐部の `capabilities` に対象操作と `authoritativeWrites: true` がそろうまでは送信しません。接続用の隔離試験は実施していますが、常駐部の業務操作と `answer-context` の公開・結合試験は別途必要です。未対応の段階で実運用へ切り替えないでください。
 
 ## ビルドと配布
 
@@ -54,7 +65,12 @@ CIは既存の拡張と同じmatrixで型検査・テスト・VSIX生成を行�
 | `src/actions.ts`          | 操作の順序、確認、回答の保持と再送              |
 | `src/answerEditor.ts`     | 無題の原文入力と確認（ディスク保存なし）        |
 | `src/boardClient.ts`      | 台帳読取り、対象選別、固定CLI引数、結果の読戻し |
+| `src/gateway.ts`          | UIが使う操作ポートと結果待ちの型                |
+| `src/backend.ts`          | 正本の切替状態による接続先の選択                |
+| `src/runtimeGateway.ts`   | 契約v1の操作、版照合、永続IDによる復帰          |
+| `src/runtimeFiles.ts`     | 常駐CLIと投影・結果ファイルの読取り             |
 | `test/actions.test.ts`    | 確認・取消・失敗・原文・同じ操作IDの回帰検証    |
+| `test/runtime.test.ts`    | 結果待ち・切替・拒否・復帰の隔離試験            |
 | `test/cli-integration.ts` | 指定された本物の回答CLIと隔離台帳での検証補助   |
 
 台帳の本文はVS Codeの文字列項目として表示します。ビューのCSPはnonceを持つ固定スクリプトだけを許可します。Webviewからは固定の操作名だけを受け取り、任意のCLIコマンドを実行しません。

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
-    candidates,
-    Ledger,
     type Action,
+    candidates,
     type Operation,
     type PendingAnswer,
 } from './boardClient.ts';
+import { type ActionGateway, OperationPending } from './gateway.ts';
 
 export interface Interaction {
     pick(actions: Action[], operation: Operation): Promise<Action | undefined>;
@@ -24,15 +24,23 @@ export interface Drafts {
 
 export async function record(
     operation: Operation,
-    ledger: Ledger,
+    ledger: ActionGateway,
     ui: Interaction,
-    drafts: Drafts
+    drafts: Drafts,
 ): Promise<void> {
     let pending: PendingAnswer | undefined;
     let previous: PendingAnswer | undefined;
     const key = `taskSupervisor.answer:${ledger.root}`;
     try {
-        if (operation === 'answer' && (pending = drafts.get(key))) {
+        const resumed = await ledger.resume?.();
+        if (resumed) {
+            if (drafts.get(key)?.commandId === resumed.commandId)
+                await drafts.set(key, undefined);
+            ui.info(resumed.message);
+            return;
+        }
+        if (operation === 'answer') pending = drafts.get(key);
+        if (pending) {
             if (await ledger.hasAnswer(pending)) {
                 await drafts.set(key, undefined);
                 ui.info(`${pending.id} の回答は台帳へ保存済みです`);
@@ -44,7 +52,7 @@ export async function record(
                 if (
                     !(await ui.confirm(
                         `${pending.id} の未保存回答を同じ操作IDで再送しますか？`,
-                        pending.answer
+                        pending.answer,
                     ))
                 )
                     return;
@@ -61,7 +69,7 @@ export async function record(
             ui.info(
                 operation === 'ran'
                     ? 'キック済みを記録できる未完了の実行依頼はありません'
-                    : 'この操作の対象となる未完了の依頼はありません'
+                    : 'この操作の対象となる未完了の依頼はありません',
             );
             return;
         }
@@ -71,20 +79,20 @@ export async function record(
             if (
                 !(await ui.confirm(
                     `${row.id} を${operation === 'complete' ? '完了（結果確認 OK）' : 'キック済み'}として記録しますか？`,
-                    `${row.text}${row.command ? '\n\nコマンド（この操作では実行しません）:\n' + row.command : ''}`
+                    `${row.text}${row.command ? `\n\nコマンド（この操作では実行しません）:\n${row.command}` : ''}`,
                 ))
             )
                 return;
             await ledger.complete(row, operation);
             ui.info(
-                `${row.id} の${operation === 'complete' ? '完了' : 'キック済み'}を台帳へ記録しました`
+                `${row.id} の${operation === 'complete' ? '完了' : 'キック済み'}を台帳へ記録しました`,
             );
             return;
         }
         let documentVersion: string | undefined;
         if (/^https?:\/\//i.test(row.doc ?? '')) {
             documentVersion = await ui.input(
-                `資料 ${row.doc} を確認した版（改訂番号など）`
+                `資料 ${row.doc} を確認した版（改訂番号など）`,
             );
             if (documentVersion === undefined) return;
             if (!documentVersion.trim())
@@ -94,7 +102,7 @@ export async function record(
         if (
             !(await ui.confirm(
                 `${row.id} の依頼と資料を確認してください`,
-                `${context.request.text}\n\n資料: ${context.document?.ref ?? 'なし'}\n資料の版: ${context.document?.version ?? 'なし'}`
+                `${context.request.text}\n\n資料: ${context.document?.ref ?? 'なし'}\n資料の版: ${context.document?.version ?? 'なし'}`,
             ))
         )
             return;
@@ -111,7 +119,7 @@ export async function record(
             throw new Error('回答は128 KiB以内で入力してください');
         const respondent = await ui.input(
             '回答者の識別名（例: 氏名・社内アカウント名）',
-            previous?.respondent
+            previous?.respondent,
         );
         if (respondent === undefined) return;
         if (!respondent.trim() || respondent.length > 500)
@@ -119,7 +127,7 @@ export async function record(
         if (
             !(await ui.confirm(
                 `${row.id} の回答を保存して完了にしますか？${row.needsOk ? ' 結果確認 OK も記録します。' : ''}`,
-                `回答者: ${respondent}\n\n回答（原文）:\n${answer}`
+                `回答者: ${respondent}\n\n回答（原文）:\n${answer}`,
             ))
         )
             return;
@@ -131,14 +139,19 @@ export async function record(
             commandId: randomUUID(),
             documentVersion,
             confirmedResult: !!row.needsOk,
+            ...(context.runtime ? { runtime: context.runtime } : {}),
         };
         await drafts.set(key, pending);
         await ledger.answer(pending);
         await drafts.set(key, undefined);
         ui.info(`${row.id} の回答原文と完了を台帳へ記録しました`);
     } catch (error) {
+        if (error instanceof OperationPending) {
+            ui.info(error.message);
+            return;
+        }
         ui.error(
-            `記録できませんでした: ${String(error)}${pending ? '\n回答と同じ操作IDを保持しました。回答コマンドで台帳を確認してから再送できます。' : ''}`
+            `記録できませんでした: ${String(error)}${pending ? '\n回答と同じ操作IDを保持しました。回答コマンドで台帳を確認してから再送できます。' : ''}`,
         );
     }
 }
