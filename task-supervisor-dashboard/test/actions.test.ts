@@ -9,7 +9,7 @@ import {
     type Action,
     type PendingAnswer,
     type Registry,
-} from '../src/ledger.ts';
+} from '../src/boardClient.ts';
 import { record, type Interaction } from '../src/actions.ts';
 
 const action = (extra: Partial<Action> = {}): Action => ({

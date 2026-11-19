@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { record, type Interaction } from './actions.ts';
-import { Ledger, boardRunner, type Operation } from './ledger.ts';
+import { Ledger, boardRunner, type Operation } from './boardClient.ts';
 
 export function activate(context: vscode.ExtensionContext): void {
     let busy = false;

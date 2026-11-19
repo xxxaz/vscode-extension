@@ -5,7 +5,7 @@ import {
     type Action,
     type Operation,
     type PendingAnswer,
-} from './ledger.ts';
+} from './boardClient.ts';
 
 export interface Interaction {
     pick(actions: Action[], operation: Operation): Promise<Action | undefined>;

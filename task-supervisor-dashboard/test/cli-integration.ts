@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Ledger, boardRunner, type PendingAnswer } from '../src/ledger.ts';
+import { Ledger, boardRunner, type PendingAnswer } from '../src/boardClient.ts';
 const board = process.argv[2];
 if (!board) throw Error('answer対応board.tsのパスを指定してください');
 const root = await mkdtemp(join(tmpdir(), 'supervisor-real-cli-'));
