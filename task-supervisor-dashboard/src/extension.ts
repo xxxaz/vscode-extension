@@ -161,12 +161,27 @@ export function activate(context: vscode.ExtensionContext): void {
                 )
                     entry.feed.request();
             };
+            let freshnessTimer: ReturnType<typeof setTimeout>;
+            let disposed = false;
+            const checkFreshness = () => {
+                if (disposed) return;
+                if (entry.views > 0 && reader.usesRuntimeSnapshot())
+                    entry.feed.request();
+                freshnessTimer = setTimeout(checkFreshness, 5000);
+            };
+            freshnessTimer = setTimeout(checkFreshness, 5000);
             context.subscriptions.push(
                 watcher,
                 watcher.onDidCreate(changed),
                 watcher.onDidChange(changed),
                 watcher.onDidDelete(changed),
-                { dispose: () => entry.feed.dispose() },
+                {
+                    dispose: () => {
+                        disposed = true;
+                        clearTimeout(freshnessTimer);
+                        entry.feed.dispose();
+                    },
+                },
             );
             return entry;
         })().catch((error) => {
@@ -392,8 +407,8 @@ export function activate(context: vscode.ExtensionContext): void {
                     const message = parseBoardMessage(value);
                     if (!message) return;
                     if (message.type === 'ready') {
-                        entry.feed.replay(send);
                         send(lastStatus);
+                        entry.feed.replay(send);
                         entry.feed.request();
                     } else if (message.type === 'refresh') {
                         await entry.feed.refresh();

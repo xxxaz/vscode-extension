@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
     type Action,
     candidates,
+    commonView,
     type Operation,
     type PendingAnswer,
     revision,
@@ -24,12 +25,14 @@ export interface Drafts {
 }
 
 export async function record(
-    operation: Operation,
+    requestedOperation: Operation,
     ledger: ActionGateway,
     ui: Interaction,
     drafts: Drafts,
     selected?: { id: string; revision: string },
 ): Promise<void> {
+    let operation = requestedOperation;
+    let forceRecommended = false;
     let pending: PendingAnswer | undefined;
     let previous: PendingAnswer | undefined;
     const key = `taskSupervisor.answer:${ledger.root}`;
@@ -41,10 +44,9 @@ export async function record(
             ui.info(resumed.message, 'success');
             return;
         }
-        const selectedRow = selected
-            ? candidates(await ledger.read(), operation).find(
-                  (a) => a.id === selected.id,
-              )
+        const initial = await ledger.read();
+        let selectedRow = selected
+            ? candidates(initial, operation).find((a) => a.id === selected.id)
             : undefined;
         if (
             selected &&
@@ -53,9 +55,26 @@ export async function record(
             throw new Error(
                 '一覧の依頼が更新されました。最新の行を確認して操作してください',
             );
+        if (operation === 'complete') {
+            const rows = candidates(initial, operation);
+            if (!rows.length) {
+                ui.info('この操作の対象となる未完了の依頼はありません');
+                return;
+            }
+            selectedRow ??= await ui.pick(rows, operation);
+            if (!selectedRow) return;
+            if (
+                commonView(initial).rows.find(
+                    (row) => row.id === selectedRow?.id,
+                )?.kind === 'decision'
+            ) {
+                operation = 'answer';
+                forceRecommended = true;
+            }
+        }
         if (operation === 'answer') pending = drafts.get(key);
         if (pending) {
-            if (selected && pending.id !== selected.id)
+            if (selectedRow && pending.id !== selectedRow.id)
                 throw new Error(
                     `${pending.id} の未保存回答を保持しています。先にその依頼の回答を確認してください`,
                 );
@@ -96,7 +115,7 @@ export async function record(
         if (operation !== 'answer') {
             if (
                 !(await ui.confirm(
-                    `${row.id} を${operation === 'complete' ? '完了（結果確認 OK）' : 'キック済み'}として記録しますか？`,
+                    `${row.id} を${operation === 'complete' ? (row.needsOk ? '結果確認 OK' : '完了') : 'キック済み'}として記録しますか？`,
                     `${row.text}${row.command ? `\n\nコマンド（この操作では実行しません）:\n${row.command}` : ''}`,
                 ))
             )
@@ -125,7 +144,7 @@ export async function record(
             ))
         )
             return;
-        const mode = await ui.choice();
+        const mode = forceRecommended ? 'recommended' : await ui.choice();
         if (!mode) return;
         const answer =
             mode === 'recommended'

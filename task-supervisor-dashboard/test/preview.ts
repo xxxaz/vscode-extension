@@ -2,13 +2,49 @@ import { randomBytes } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { projectBoard } from '../src/boardModel.ts';
 import type { BoardSnapshot } from '../src/dashboardTypes.ts';
 import { boardHtml } from '../src/dashboardWebview.ts';
+import {
+    parseUserActionsView,
+    type UserActionSource,
+    type UserActionsView,
+} from '../src/userActionsView.ts';
 
-export function sampleSnapshot(): BoardSnapshot {
+const skillRelative = '.agents/skills/task-supervisor';
+
+async function loadProjection(
+    skillDirectory: string,
+): Promise<(registry: unknown, fetchedAt: number) => UserActionsView> {
+    const path = resolve(skillDirectory, 'user-actions/project.ts');
+    let projectUserActions: unknown;
+    try {
+        ({ projectUserActions } = await import(pathToFileURL(path).href));
+    } catch (error) {
+        throw new Error(
+            `共通の依頼一覧を読み込めません。--skill-dirで対応する監督skillを指定してください（${path}）`,
+            { cause: error },
+        );
+    }
+    if (typeof projectUserActions !== 'function')
+        throw new Error(`正本にprojectUserActionsがありません（${path}）`);
+    return (registry, fetchedAt) => {
+        const source: UserActionSource & { error: null } = {
+            mode: 'legacy',
+            epoch: null,
+            fetchedAt,
+            error: null,
+        };
+        return parseUserActionsView(projectUserActions({ registry, source }));
+    };
+}
+
+export async function sampleSnapshot(
+    skillDirectory = resolve(import.meta.dirname, '../..', skillRelative),
+): Promise<BoardSnapshot> {
+    const projectUserActions = await loadProjection(skillDirectory);
     const now = Date.now();
     const statuses = [
         'ユーザー待ち',
@@ -134,6 +170,17 @@ export function sampleSnapshot(): BoardSnapshot {
             command,
             ranAt: now - 30_000,
         },
+        {
+            ...baseAction,
+            id: 'U8',
+            taskId: 'T8',
+            kind: 'execution',
+            summary: '確認用レポートを出力済み',
+            text: 'レポートの出力を記録しました。共有できたら完了にしてください。',
+            command: 'node ./tools/inspect-preview.ts --format json',
+            needsOk: false,
+            ranAt: now - 50_000,
+        },
     ];
     const sessions = Object.fromEntries(
         tasks.map((value) => [
@@ -154,20 +201,25 @@ export function sampleSnapshot(): BoardSnapshot {
             },
         ]),
     );
+    const registry = {
+        version: 1,
+        nextTaskNo: 16,
+        nextActionNo: 9,
+        ignored: [],
+        supervisor: { cli: 'codex', id: 'preview-T1' },
+        tasks: [
+            ...tasks,
+            task('T13', '確認先の回答が届いたら再開する', '保留'),
+            {
+                ...task('T14', '結果の確認を完了したタスク', '完了'),
+                completedAt: now - 10_000,
+            },
+        ],
+        actions,
+    };
     const snapshot = projectBoard({
-        registry: {
-            version: 1,
-            supervisor: { cli: 'codex', id: 'preview-T1' },
-            tasks: [
-                ...tasks,
-                task('T13', '確認先の回答が届いたら再開する', '保留'),
-                {
-                    ...task('T14', '結果の確認を完了したタスク', '完了'),
-                    completedAt: now - 10_000,
-                },
-            ],
-            actions,
-        },
+        registry,
+        userActions: projectUserActions(registry, now),
         archive: {
             tasks: [
                 {
@@ -272,6 +324,7 @@ export function sampleSnapshot(): BoardSnapshot {
 
 export async function readPreviewSnapshot(
     workspaceRoot: string,
+    skillDirectory = resolve(workspaceRoot, skillRelative),
 ): Promise<BoardSnapshot> {
     const root = resolve(workspaceRoot);
     const directory = join(root, '.agents/ローカルタスク/監督');
@@ -282,16 +335,19 @@ export async function readPreviewSnapshot(
         'state.json',
         'events.jsonl',
     ];
-    const read = await Promise.all(
-        files.map(async (name) => {
-            const path = join(directory, name);
-            const [text, info] = await Promise.all([
-                readFile(path, 'utf8'),
-                stat(path),
-            ]);
-            return { text, modifiedAt: info.mtimeMs };
-        }),
-    );
+    const [projectUserActions, read] = await Promise.all([
+        loadProjection(skillDirectory),
+        Promise.all(
+            files.map(async (name) => {
+                const path = join(directory, name);
+                const [text, info] = await Promise.all([
+                    readFile(path, 'utf8'),
+                    stat(path),
+                ]);
+                return { text, modifiedAt: info.mtimeMs };
+            }),
+        ),
+    ]);
     const events: unknown[] = [];
     const lines = read[3].text.split('\n');
     for (let index = 0; index < lines.length; index++) {
@@ -308,8 +364,10 @@ export async function readPreviewSnapshot(
             throw new Error(`出来事ログの${index + 1}行目を読み取れません`);
         }
     }
+    const registry: unknown = JSON.parse(read[0].text);
     const snapshot = projectBoard({
-        registry: JSON.parse(read[0].text),
+        registry,
+        userActions: projectUserActions(registry, Date.now()),
         archive: JSON.parse(read[1].text),
         state: JSON.parse(read[2].text),
         events,
@@ -333,14 +391,18 @@ export function previewHtml(snapshot: BoardSnapshot, nonce: string): string {
     );
 }
 
-export async function startPreview(workspaceRoot?: string, port = 8873) {
+export async function startPreview(
+    workspaceRoot?: string,
+    port = 8873,
+    skillDirectory?: string,
+) {
     if (!Number.isInteger(port) || port < 0 || port > 65535)
         throw new Error(
             'プレビューのポートは0から65535の整数を指定してください',
         );
     const snapshot = workspaceRoot
-        ? await readPreviewSnapshot(workspaceRoot)
-        : sampleSnapshot();
+        ? await readPreviewSnapshot(workspaceRoot, skillDirectory)
+        : await sampleSnapshot(skillDirectory);
     const built = await build({
         entryPoints: [
             join(dirname(fileURLToPath(import.meta.url)), 'previewEntry.ts'),
@@ -388,7 +450,7 @@ export async function startPreview(workspaceRoot?: string, port = 8873) {
     console.log(`プレビューを開始しました: http://127.0.0.1:${address.port}/`);
     console.log(
         workspaceRoot
-            ? '台帳4原稿を読取り表示しています。操作は記録しません。'
+            ? 'JSON台帳の4原票を共通の投影で表示しています。操作は記録しません。'
             : 'サンプル台帳を表示しています。操作は記録しません。',
     );
     return server;
@@ -400,16 +462,18 @@ if (
 ) {
     const args = process.argv.slice(2);
     const portArg = args.find((arg) => arg.startsWith('--port='));
-    const roots = args.filter((arg) => !arg.startsWith('--port='));
+    const skillArg = args.find((arg) => arg.startsWith('--skill-dir='));
+    const roots = args.filter((arg) => arg !== portArg && arg !== skillArg);
     if (roots.length > 1) {
         console.error(
-            '使用方法: node test/preview.ts [workspace-root] [--port=8873]',
+            '使用方法: node test/preview.ts [workspace-root] [--port=8873] [--skill-dir=<監督skillディレクトリ>]',
         );
         process.exitCode = 1;
     } else {
         startPreview(
             roots[0],
             portArg ? Number(portArg.slice('--port='.length)) : 8873,
+            skillArg?.slice('--skill-dir='.length),
         ).catch((error: unknown) => {
             console.error(
                 'プレビューを開始できませんでした:',

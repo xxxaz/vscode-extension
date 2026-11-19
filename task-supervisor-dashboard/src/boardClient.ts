@@ -1,9 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ActionGateway, RuntimeSelection } from './gateway.ts';
+import {
+    parseUserActionsView,
+    UserActionsUnavailable,
+    type UserActionsView,
+    viewOperations,
+} from './userActionsView.ts';
 
 export interface Action {
     id: string;
@@ -32,6 +36,7 @@ export interface Action {
 export interface Registry {
     version: number;
     actions: Action[];
+    userActions?: UserActionsView;
 }
 export interface AnswerContext {
     schemaVersion: 1;
@@ -52,79 +57,90 @@ export interface PendingAnswer {
     runtime?: RuntimeSelection;
 }
 export type Operation = 'complete' | 'ran' | 'answer';
-export const kind = (a: Action): 'execution' | 'decision' =>
-    a.kind ?? (a.command?.trim() ? 'execution' : 'decision');
 export const revision = (a: Action): string =>
     createHash('sha256').update(JSON.stringify(a)).digest('hex');
 export function candidates(r: Registry, operation: Operation): Action[] {
-    return r.actions
-        .filter(
-            (a) =>
-                !a.done &&
-                a.withdrawal === undefined &&
-                !a.holdReason &&
-                !(a.after ?? []).some((id) =>
-                    r.actions.some((other) => other.id === id && !other.done),
-                ),
-        )
-        .filter((a) =>
-            operation === 'answer'
-                ? kind(a) === 'decision' && !!a.taskId
-                : kind(a) === 'execution' &&
-                  (operation !== 'ran' || a.ranAt === undefined),
-        )
-        .sort(
-            (a, b) =>
-                (a.priority === b.priority
-                    ? 0
-                    : a.priority === undefined
-                      ? 1
-                      : b.priority === undefined
-                        ? -1
-                        : a.priority - b.priority) ||
-                (a.createdAt ?? 0) - (b.createdAt ?? 0) ||
-                a.id.localeCompare(b.id, 'en', { numeric: true }),
+    const view = commonView(r);
+    const byId = new Map(r.actions.map((action) => [action.id, action]));
+    return view.rows
+        .filter((row) => viewOperations(row).includes(operation))
+        .map((row) => {
+            const action = byId.get(row.id);
+            if (!action) throw new Error('共通一覧と操作対象が一致しません');
+            return action;
+        });
+}
+export function commonView(r: Registry) {
+    if (!r.userActions)
+        throw new Error(
+            '共通操作一覧を取得できません。対応するread CLIが必要です',
         );
+    const view = parseUserActionsView(r.userActions);
+    if (view.status === 'unavailable') throw new UserActionsUnavailable(view);
+    return view;
 }
 export class Ledger implements ActionGateway {
     readonly root: string;
     readonly run: (args: string[]) => Promise<string>;
     readonly guard: () => Promise<void>;
+    private readonly readView: () => Promise<UserActionsView>;
     constructor(
         root: string,
         run: (args: string[]) => Promise<string>,
         guard = async (): Promise<void> => {},
+        readView?: () => Promise<UserActionsView>,
     ) {
         this.root = root;
         this.run = run;
         this.guard = guard;
+        this.readView =
+            readView ??
+            (async () => {
+                const output = await this.run(['user-actions', '--json']);
+                try {
+                    return parseUserActionsView(JSON.parse(output));
+                } catch (error) {
+                    throw new Error(
+                        `共通操作一覧のread応答が不正です: ${String(error)}`,
+                    );
+                }
+            });
     }
     async read(): Promise<Registry> {
         await this.guard();
-        const r = JSON.parse(
-            await readFile(
-                join(this.root, '.agents/ローカルタスク/監督/registry.json'),
-                'utf8',
-            ),
-        ) as Registry;
-        if (r.version !== 1 || !Array.isArray(r.actions))
-            throw new Error('未対応の台帳形式です');
-        for (const a of r.actions)
-            if (
-                !/^U\d+[A-Z]*$/.test(a.id) ||
-                typeof a.text !== 'string' ||
-                typeof a.done !== 'boolean'
-            )
-                throw new Error('依頼の形式が不正です');
-        return r;
+        const view = parseUserActionsView(await this.readView());
+        await this.guard();
+        if (view.status === 'unavailable')
+            throw new UserActionsUnavailable(view);
+        if (view.source.mode === 'authoritative' || view.source.epoch !== null)
+            throw new Error(
+                '共通一覧の正本が変わりました。旧CLIへ変更しません',
+            );
+        return {
+            version: 1,
+            actions: view.rows.map(({ action }) => {
+                const { runtime: _runtime, ...raw } = action;
+                return raw;
+            }),
+            userActions: view,
+        };
     }
     async current(selected: Action, operation: Operation): Promise<Action> {
-        const row = candidates(await this.read(), operation).find(
+        const registry = await this.read();
+        const row = candidates(registry, operation).find(
             (a) => a.id === selected.id,
         );
         if (!row || revision(row) !== revision(selected))
             throw new Error(
                 '依頼が更新されました。未保存のため、最新の依頼を選び直してください',
+            );
+        if (
+            operation === 'complete' &&
+            commonView(registry).rows.find((item) => item.id === row.id)
+                ?.kind === 'decision'
+        )
+            throw new Error(
+                '判断の推奨完了は回答contextを通して記録してください',
             );
         return row;
     }
@@ -222,15 +238,39 @@ export function boardRunner(
     boardPath: string,
 ): (args: string[]) => Promise<string> {
     const exec = promisify(execFile);
-    return async (args) =>
-        (
-            await exec(nodePath, [boardPath, ...args], {
-                cwd: root,
-                // biome-ignore lint/style/noProcessEnv: 拡張のCLI境界でホストの実行環境を継承し対象ルートだけ固定する。
-                env: { ...process.env, CLAUDE_PROJECT_DIR: root },
-                encoding: 'utf8',
-                timeout: 120000,
-                maxBuffer: 1024 * 1024,
-            })
-        ).stdout;
+    return async (args) => {
+        try {
+            return (
+                await exec(nodePath, [boardPath, ...args], {
+                    cwd: root,
+                    // biome-ignore lint/style/noProcessEnv: 拡張のCLI境界でホストの実行環境を継承し対象ルートだけ固定する。
+                    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+                    encoding: 'utf8',
+                    timeout: 120000,
+                    maxBuffer: 16 * 1024 * 1024,
+                })
+            ).stdout;
+        } catch (error) {
+            if (
+                args.length === 2 &&
+                args[0] === 'user-actions' &&
+                args[1] === '--json' &&
+                error instanceof Error &&
+                'code' in error &&
+                error.code === 1 &&
+                'stdout' in error &&
+                typeof error.stdout === 'string'
+            ) {
+                let view: UserActionsView;
+                try {
+                    view = parseUserActionsView(JSON.parse(error.stdout));
+                } catch {
+                    throw error;
+                }
+                if (view.status === 'unavailable')
+                    throw new UserActionsUnavailable(view);
+            }
+            throw error;
+        }
+    };
 }

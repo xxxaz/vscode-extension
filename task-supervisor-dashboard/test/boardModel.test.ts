@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { candidates, revision } from '../src/boardClient.ts';
+import { revision } from '../src/boardClient.ts';
 import { projectBoard } from '../src/boardModel.ts';
 import type {
     BoardCard,
     BoardLink,
     BoardSnapshot,
 } from '../src/dashboardTypes.ts';
+import {
+    type UserActionRow,
+    UserActionsUnavailable,
+    type UserActionsView,
+} from '../src/userActionsView.ts';
 
 const task = (id = 'T1', extra = {}) => ({
     id,
@@ -31,8 +36,43 @@ const request = (id = 'U1', extra = {}) => ({
     createdAt: 1,
     ...extra,
 });
+const noOperations = {
+    execute: false,
+    answer: false,
+    complete: false,
+    confirmResult: false,
+};
+const available = {
+    actionable: true,
+    held: false,
+    holdReason: null,
+    pendingPrerequisites: [],
+};
+const row = (
+    action: UserActionRow['action'],
+    view: Pick<UserActionRow, 'kind' | 'lifecycle' | 'operations'> &
+        Partial<Pick<UserActionRow, 'availability' | 'task' | 'version'>>,
+): UserActionRow => ({
+    id: action.id,
+    version: '行の表示版',
+    task: null,
+    availability: available,
+    action,
+    ...view,
+});
+const ready = (
+    rows: UserActionRow[] = [],
+    mode: UserActionsView['source']['mode'] = 'legacy',
+): Extract<UserActionsView, { status: 'ready' }> => ({
+    schemaVersion: 1,
+    status: 'ready',
+    viewVersion: '一覧の表示版',
+    source: { mode, epoch: null, fetchedAt: 1000, error: null },
+    rows,
+});
 const input = (extra = {}) => ({
-    registry: { version: 1, tasks: [task()], actions: [request()] },
+    registry: { version: 1, tasks: [task()], actions: [] },
+    userActions: ready(),
     archive: { tasks: [] },
     state: {},
     events: [],
@@ -63,90 +103,249 @@ const links = (s: BoardSnapshot): BoardLink[] => [
     ),
 ];
 
-test('依頼は正本の実行・判断・保留・結果待ちへ分類し、優先度と作成時刻で並べる', () => {
-    const actions = [
-        request('U1', { priority: 2, createdAt: 1 }),
-        request('U2', { priority: 1, createdAt: 20 }),
-        request('U3', { priority: 1, createdAt: 10 }),
-        request('U4', { command: undefined }),
-        request('U5', { holdReason: '解除条件' }),
-        request('U6', { after: ['U5'] }),
-        request('U7', { ranAt: 3, holdReason: '以前の保留' }),
-        request('U8', { done: true }),
-        request('U9', { withdrawal: { at: 2, reason: '取り下げ' } }),
-        request('U10', { after: ['U99'] }),
-        request('U11', { after: ['U8'] }),
-        request('U12', { after: ['U9'] }),
-        request('U13', { after: ['U7'] }),
-        request('U14', { kind: 'decision', command: '判断資料の操作例' }),
+test('共通ビューの順序・区分・操作候補を使い、タスクの依頼件数へ反映する', () => {
+    const rows = [
+        row(request('U3'), {
+            kind: 'execution',
+            lifecycle: 'unexecuted',
+            operations: { ...noOperations, execute: true, complete: true },
+        }),
+        row(request('U2', { needsOk: true }), {
+            kind: 'execution',
+            lifecycle: 'unexecuted',
+            operations: { ...noOperations, execute: true },
+        }),
+        row(request('U1', { kind: 'decision' }), {
+            kind: 'decision',
+            lifecycle: 'decision',
+            operations: { ...noOperations, answer: true, complete: true },
+        }),
+        row(request('U4', { holdReason: '解除条件' }), {
+            kind: 'execution',
+            lifecycle: 'unexecuted',
+            availability: {
+                ...available,
+                actionable: false,
+                held: true,
+                holdReason: '解除条件',
+            },
+            operations: noOperations,
+        }),
+        row(request('U5', { after: ['U4', 'U6'] }), {
+            kind: 'execution',
+            lifecycle: 'unexecuted',
+            availability: {
+                actionable: false,
+                held: true,
+                holdReason: '前提 U4 の完了待ち',
+                pendingPrerequisites: ['U4'],
+            },
+            operations: noOperations,
+        }),
+        row(request('U6', { done: true }), {
+            kind: 'execution',
+            lifecycle: 'completed',
+            availability: { ...available, actionable: false },
+            operations: noOperations,
+        }),
+        row(request('U7', { withdrawal: { at: 2, reason: '取り下げ' } }), {
+            kind: 'execution',
+            lifecycle: 'withdrawn',
+            availability: { ...available, actionable: false },
+            operations: noOperations,
+        }),
     ];
-    const registry = {
-        version: 1,
-        tasks: [task('T1', { status: '保留' })],
-        actions,
-    };
-    const snapshot = projectBoard(input({ registry }));
-    assert.deepEqual(ids(snapshot, 'execution'), [
-        'U3',
-        'U2',
-        'U1',
-        'U10',
-        'U11',
-    ]);
-    assert.deepEqual(ids(snapshot, 'decision'), ['U4', 'U14']);
-    assert.deepEqual(ids(snapshot, 'held'), ['U5', 'U6', 'U12', 'U13']);
-    assert.deepEqual(ids(snapshot, 'awaiting'), ['U7']);
-    assert.equal(
-        cards(snapshot, 'execution').find((c) => c.id === 'U10')?.badge,
-        '実行 · 優先度 未指定',
+    const snapshot = projectBoard(
+        input({
+            registry: {
+                version: 1,
+                tasks: [task('T1', { status: '保留' })],
+                actions: rows.map(({ action }) => action).reverse(),
+            },
+            userActions: ready(rows),
+        }),
     );
-    assert.match(fields(cards(snapshot, 'held')[1]), /前提 U5 の完了待ち/);
-    assert.ok(cards(snapshot, 'held').every((v) => v.operations.length === 0));
-    for (const operation of ['complete', 'ran', 'answer'] as const) {
-        const actual = snapshot.sections
-            .flatMap((v) =>
-                v.cards.flatMap((c) =>
-                    c.operations
-                        .filter((o) => o.operation === operation)
-                        .map((o) => o.id),
-                ),
-            )
-            .sort();
-        assert.deepEqual(
-            actual,
-            candidates(registry, operation)
-                .map((v) => v.id)
-                .sort(),
-        );
-    }
+    assert.deepEqual(ids(snapshot, 'execution'), ['U3', 'U2']);
+    assert.deepEqual(ids(snapshot, 'decision'), ['U1']);
+    assert.deepEqual(ids(snapshot, 'held'), ['U4', 'U5']);
+    assert.equal(cards(snapshot, 'execution')[0].badge, '実行 · 優先度 未指定');
+    const [execution, needsOk] = cards(snapshot, 'execution');
     assert.deepEqual(
-        cards(snapshot, 'awaiting')[0].operations.map((v) => v.operation),
-        [],
+        execution.operations.map(({ operation, label }) => [operation, label]),
+        [
+            ['complete', '完了'],
+            ['ran', 'キック済み'],
+        ],
     );
+    assert.deepEqual(
+        needsOk.operations.map((o) => o.operation),
+        ['ran'],
+    );
+    assert.deepEqual(
+        cards(snapshot, 'decision')[0].operations.map(
+            ({ operation, label }) => [operation, label],
+        ),
+        [
+            ['complete', '推奨で進める'],
+            ['answer', '回答'],
+        ],
+    );
+    assert.match(
+        fields(cards(snapshot, 'held')[1]),
+        /保留理由・再開条件: 前提 U4 の完了待ち/,
+    );
+    assert.match(fields(cards(snapshot, 'held')[1]), /前提: U4・U6/);
+    assert.ok(cards(snapshot, 'held').every((v) => v.operations.length === 0));
+    assert.ok(
+        snapshot.sections.every(({ cards }) =>
+            cards.every(({ id }) => id !== 'U6' && id !== 'U7'),
+        ),
+    );
+    const taskStatus = fields(cards(snapshot, 'held-tasks')[0]);
+    assert.match(taskStatus, /実行待ち 2 \/ 判断待ち 1/);
+    assert.match(taskStatus, /保留中の依頼 2/);
 });
 
-test('結果待ちの実行依頼には完了だけを出し、保留理由が残る結果待ちは操作を出さない', () => {
+test('一般の実行済みと結果確認待ちを分け、実行後も保留理由と前提を表示する', () => {
+    const rows = [
+        row(request('U1', { ranAt: 1 }), {
+            kind: 'execution',
+            lifecycle: 'executed',
+            operations: { ...noOperations, complete: true },
+        }),
+        row(request('U2', { ranAt: 1, holdReason: '保留' }), {
+            kind: 'execution',
+            lifecycle: 'executed',
+            availability: {
+                ...available,
+                actionable: false,
+                holdReason: '保留',
+            },
+            operations: noOperations,
+        }),
+        row(request('U3', { ranAt: 1, needsOk: true }), {
+            kind: 'execution',
+            lifecycle: 'awaiting-result',
+            operations: { ...noOperations, confirmResult: true },
+        }),
+        row(request('U4', { ranAt: 1, needsOk: true, after: ['U2'] }), {
+            kind: 'execution',
+            lifecycle: 'awaiting-result',
+            availability: {
+                ...available,
+                actionable: false,
+                holdReason: '前提 U2 の完了待ち',
+                pendingPrerequisites: ['U2'],
+            },
+            operations: noOperations,
+        }),
+    ];
     const snapshot = projectBoard(
         input({
             registry: {
                 version: 1,
                 tasks: [task()],
-                actions: [
-                    request('U1', { ranAt: 1 }),
-                    request('U2', { ranAt: 1, holdReason: '保留' }),
-                    request('U3', { ranAt: 1, after: ['U2'] }),
-                    request('U4', { command: undefined, taskId: undefined }),
-                ],
+                actions: rows.map(({ action }) => action),
             },
+            userActions: ready(rows),
         }),
     );
+    assert.deepEqual(ids(snapshot, 'executed'), ['U1', 'U2']);
+    assert.deepEqual(ids(snapshot, 'awaiting'), ['U3', 'U4']);
+    assert.deepEqual(ids(snapshot, 'held'), []);
+    const [executed, held] = cards(snapshot, 'executed');
+    assert.match(fields(executed), /実行済み: .*・完了待ち/);
+    assert.equal(executed.operations[0].label, '完了');
+    assert.match(fields(held), /保留理由・再開条件: 保留/);
+    assert.deepEqual(held.operations, []);
+    const [awaiting, pending] = cards(snapshot, 'awaiting');
+    assert.match(fields(awaiting), /実行済み: .*・結果の確認待ち/);
     assert.deepEqual(
-        cards(snapshot, 'awaiting').map((v) =>
-            v.operations.map((o) => o.operation),
-        ),
-        [['complete'], [], []],
+        awaiting.operations.map(({ operation, label }) => [operation, label]),
+        [['complete', '結果確認 OK']],
     );
-    assert.deepEqual(cards(snapshot, 'decision')[0].operations, []);
+    assert.match(fields(pending), /保留理由・再開条件: 前提 U2 の完了待ち/);
+    assert.match(fields(pending), /前提: U2/);
+    assert.deepEqual(pending.operations, []);
+    const taskStatus = fields(cards(snapshot, 'tasks')[0]);
+    assert.match(taskStatus, /実行済み（完了待ち） 2/);
+    assert.match(taskStatus, /結果の確認待ち 2/);
+});
+
+test('空の正常な一覧と共通ビューの取得失敗を区別する', () => {
+    const snapshot = projectBoard(input());
+    assert.deepEqual(ids(snapshot, 'execution'), []);
+    const view = ready();
+    assert.deepEqual(snapshot.userActions, {
+        status: view.status,
+        viewVersion: view.viewVersion,
+        source: view.source,
+    });
+    const unavailable: UserActionsView = {
+        schemaVersion: 1,
+        viewVersion: '取得失敗の表示版',
+        status: 'unavailable',
+        source: {
+            mode: 'legacy',
+            epoch: null,
+            fetchedAt: 1000,
+            error: { code: 'read-failed', message: '取得できませんでした' },
+        },
+        rows: null,
+    };
+    assert.throws(
+        () => projectBoard(input({ userActions: unavailable })),
+        (error) => {
+            assert.ok(error instanceof UserActionsUnavailable);
+            assert.deepEqual(error.view, unavailable);
+            return true;
+        },
+    );
+});
+
+test('表示の版や区分が変わっても依頼とリンクのIDを維持する', () => {
+    const action = request('U1', { needsOk: true });
+    const open = row(action, {
+        kind: 'execution',
+        lifecycle: 'unexecuted',
+        operations: { ...noOperations, execute: true },
+    });
+    const changed = { ...open, version: 'タスク補足の更新を反映した表示版' };
+    const awaiting = row(
+        { ...action, ranAt: 3 },
+        {
+            kind: 'execution',
+            lifecycle: 'awaiting-result',
+            operations: { ...noOperations, confirmResult: true },
+            version: '結果の確認待ちの表示版',
+        },
+    );
+    const snapshot = (item: UserActionRow, viewVersion: string) =>
+        projectBoard(
+            input({
+                registry: {
+                    version: 1,
+                    tasks: [task()],
+                    actions: [item.action],
+                },
+                userActions: { ...ready([item]), viewVersion },
+            }),
+        );
+    const before = cards(snapshot(open, '一覧の表示版1'), 'execution')[0];
+    const after = cards(snapshot(changed, '一覧の表示版2'), 'execution')[0];
+    const moved = cards(snapshot(awaiting, '一覧の表示版3'), 'awaiting')[0];
+    assert.equal(before.id, after.id);
+    assert.equal(before.id, moved.id);
+    assert.equal(before.operations[0].revision, after.operations[0].revision);
+    assert.notEqual(
+        before.operations[0].revision,
+        moved.operations[0].revision,
+    );
+    const taskLink = (card: BoardCard) =>
+        card.fields.find((field) => field.label === 'タスク')?.parts[0].link
+            ?.id;
+    assert.ok(taskLink(before));
+    assert.equal(taskLink(before), taskLink(moved));
 });
 
 test('依頼の全文・コマンド・資料・推奨回答と原票の追加属性を保持したrevisionを運ぶ', () => {
@@ -163,8 +362,27 @@ test('依頼の全文・コマンド・資料・推奨回答と原票の追加�
         }),
     };
     const before = JSON.stringify(raw);
+    const selected = {
+        ...raw,
+        runtime: { epoch: 'test', taskId: 'T1', version: 7 },
+    };
+    const view = ready(
+        [
+            row(raw, {
+                kind: 'decision',
+                lifecycle: 'decision',
+                operations: { ...noOperations, answer: true },
+            }),
+        ],
+        'authoritative',
+    );
+    view.source.epoch = 'test';
     const snapshot = projectBoard(
-        input({ registry: { version: 1, tasks: [task()], actions: [raw] } }),
+        input({
+            registry: { version: 1, tasks: [task()], actions: [selected] },
+            source: 'authoritative',
+            userActions: view,
+        }),
     );
     const card = cards(snapshot, 'decision')[0];
     assert.equal(card.title, '短い見出し');
@@ -175,7 +393,8 @@ test('依頼の全文・コマンド・資料・推奨回答と原票の追加�
         card.fields.find((f) => f.label === 'コマンド・手順')?.pre,
         true,
     );
-    assert.equal(card.operations[0].revision, revision(raw));
+    assert.match(fields(card), /表示内容の版: 行の表示版/);
+    assert.equal(card.operations[0].revision, revision(selected));
     assert.equal(JSON.stringify(raw), before);
     assert.ok(
         links(snapshot).some(
@@ -187,6 +406,7 @@ test('依頼の全文・コマンド・資料・推奨回答と原票の追加�
 });
 
 test('タスクは正本のstatus順・更新降順、完了は完了日時降順、アーカイブは移動日時降順', () => {
+    const action = request('U1', { taskId: 'T8' });
     const snapshot = projectBoard(
         input({
             registry: {
@@ -200,8 +420,19 @@ test('タスクは正本のstatus順・更新降順、完了は完了日時降�
                     task('T6', { status: '完了', completedAt: 10 }),
                     task('T7', { status: '完了', completedAt: 20 }),
                 ],
-                actions: [request('U1', { taskId: 'T8' })],
+                actions: [action],
             },
+            userActions: ready([
+                row(action, {
+                    kind: 'execution',
+                    lifecycle: 'unexecuted',
+                    operations: {
+                        ...noOperations,
+                        execute: true,
+                        complete: true,
+                    },
+                }),
+            ]),
             archive: {
                 tasks: [
                     task('T8', { status: '完了', archivedAt: 10 }),
@@ -483,6 +714,7 @@ test('通知は未処理のみで本文・宛先・出典を保持し、警告�
     const snapshot = projectBoard(
         input({
             source: 'authoritative',
+            userActions: ready([], 'authoritative'),
             readWarnings: ['archive読取り警告'],
             state: {
                 facts: { warnings: ['GitHubの取得失敗'] },
@@ -570,16 +802,30 @@ test('境界で台帳の形式・重複IDを拒否し、不正なリンクを有
             ),
         /文字列/,
     );
+    const actions = [
+        request('U1', { doc: '../../../etc/passwd' }),
+        request('U2', { doc: 'javascript:alert(1)' }),
+    ];
     const snapshot = projectBoard(
         input({
             registry: {
                 version: 1,
                 tasks: [task('T1', { notes: ['../../../etc/passwd'] })],
-                actions: [
-                    request('U1', { doc: '../../../etc/passwd' }),
-                    request('U2', { doc: 'javascript:alert(1)' }),
-                ],
+                actions,
             },
+            userActions: ready(
+                actions.map((action) =>
+                    row(action, {
+                        kind: 'execution',
+                        lifecycle: 'unexecuted',
+                        operations: {
+                            ...noOperations,
+                            execute: true,
+                            complete: true,
+                        },
+                    }),
+                ),
+            ),
         }),
     );
     assert.ok(

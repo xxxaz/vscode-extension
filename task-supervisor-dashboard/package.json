@@ -2,7 +2,7 @@
     "name": "task-supervisor-dashboard",
     "displayName": "Task Supervisor",
     "description": "監督台帳の依頼・タスク・通知を一覧表示し、行から完了・キック済み・回答を記録する",
-    "version": "0.2.1",
+    "version": "0.3.0",
     "publisher": "xxxaz",
     "license": "MIT",
     "repository": {
@@ -78,7 +78,7 @@
                     "type": "string",
                     "default": ".claude/worktrees/supervisor-watch/.agents/skills/task-supervisor/board.ts",
                     "scope": "machine",
-                    "description": "ワークスペースのルートからの信頼したboard.tsのパス。回答にはanswer-context/answer対応版が必要です。"
+                    "description": "ワークスペースのルートからの信頼したboard.tsのパス。user-actions --json・answer-context・answer対応版が必要です。"
                 },
                 "taskSupervisor.nodePath": {
                     "type": "string",
@@ -110,7 +110,8 @@
         "build": "node esbuild.config.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/bundle-smoke.ts",
         "package": "npm run build && vsce package --out dist/task-supervisor-dashboard.vsix",
         "preview": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/preview.ts",
-        "test:board-parity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/board-parity.ts"
+        "test:board-parity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/board-parity.ts",
+        "test:runtime-view": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/runtime-view-integration.ts"
     },
     "devDependencies": {
         "@types/jsdom": "^21.1.7",

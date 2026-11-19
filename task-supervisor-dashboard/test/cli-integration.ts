@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Ledger, boardRunner, type PendingAnswer } from '../src/boardClient.ts';
+import {
+    boardRunner,
+    commonView,
+    Ledger,
+    type PendingAnswer,
+    type Registry,
+} from '../src/boardClient.ts';
+import { BoardReader } from '../src/boardReader.ts';
+import { UserActionsUnavailable } from '../src/userActionsView.ts';
+
 const board = process.argv[2];
-if (!board) throw Error('answer対応board.tsのパスを指定してください');
+if (!board)
+    throw new Error(
+        '共通読取りとanswerに対応したboard.tsのパスを指定してください',
+    );
 const root = await mkdtemp(join(tmpdir(), 'supervisor-real-cli-'));
-await using cleanup = {
+await using _cleanup = {
     async [Symbol.asyncDispose]() {
         await rm(root, { recursive: true, force: true });
     },
@@ -56,17 +68,51 @@ await writeFile(
                 createdAt: 1,
             },
         ],
-    })
+    }),
 );
 const ledger = new Ledger(
     root,
-    boardRunner(root, process.execPath, resolve(board))
+    boardRunner(root, process.execPath, resolve(board)),
 );
-let r = await ledger.read();
-await ledger.complete(r.actions[0], 'ran');
-r = await ledger.read();
-await ledger.complete(r.actions[0], 'complete');
-const ctx = await ledger.answerContext(r.actions[1]);
+const action = (registry: Registry, id: string) => {
+    const selected = registry.actions.find((value) => value.id === id);
+    assert.ok(selected, `隔離台帳に依頼 ${id} がありません`);
+    return selected;
+};
+const initial = await ledger.read().catch((error: unknown) => {
+    if (
+        error instanceof Error &&
+        (('code' in error && error.code === 2) ||
+            ('stderr' in error &&
+                typeof error.stderr === 'string' &&
+                error.stderr.trim() === '--json に値がありません'))
+    )
+        throw new Error(
+            '指定されたboard.tsは共通の読取りコマンド user-actions --json に未対応です',
+        );
+    throw error;
+});
+const initialView = commonView(initial);
+assert.equal(initialView.source.mode, 'shadow');
+assert.equal(initialView.source.epoch, null);
+const initialRows = initialView.rows;
+assert.equal(
+    initialRows.find((row) => row.id === 'U1')?.lifecycle,
+    'unexecuted',
+);
+assert.equal(initialRows.find((row) => row.id === 'U2')?.lifecycle, 'decision');
+await ledger.complete(action(initial, 'U1'), 'ran');
+const ran = await ledger.read();
+const awaiting = commonView(ran).rows.find((row) => row.id === 'U1');
+assert.equal(awaiting?.lifecycle, 'awaiting-result');
+assert.equal(awaiting.operations.confirmResult, true);
+await ledger.complete(action(ran, 'U1'), 'complete');
+const completed = await ledger.read();
+assert.equal(
+    commonView(completed).rows.find((row) => row.id === 'U1')?.lifecycle,
+    'completed',
+);
+const ctx = await ledger.answerContext(action(completed, 'U2'));
 const p: PendingAnswer = {
     id: 'U2',
     answer: '  原文\n`$(実行しない)`  ',
@@ -78,7 +124,26 @@ const p: PendingAnswer = {
 await ledger.answer(p);
 await ledger.answer(p);
 assert.equal(await ledger.hasAnswer(p), true);
-assert.equal((await ledger.read()).actions[1].answers!.length, 1);
+assert.equal(action(await ledger.read(), 'U2').answers?.length, 1);
+await writeFile(join(dir, 'registry.json'), '{');
+let expectedFailure: UserActionsUnavailable['view'] | undefined;
+await assert.rejects(ledger.read(), (error) => {
+    assert.ok(error instanceof UserActionsUnavailable);
+    assert.equal(error.view.status, 'unavailable');
+    assert.equal(error.view.rows, null);
+    assert.equal(error.view.source.mode, 'shadow');
+    assert.equal(error.view.source.epoch, null);
+    assert.equal(error.view.source.error.code, 'registry-read-failed');
+    expectedFailure = error.view;
+    return true;
+});
+assert.ok(expectedFailure);
+const reader = new BoardReader(root, { gateway: async () => ledger });
+await assert.rejects(reader.read(), (error) => {
+    assert.ok(error instanceof UserActionsUnavailable);
+    assert.deepEqual(error.view, expectedFailure);
+    return true;
+});
 console.log(
-    '隔離台帳と実board.tsでキック済み・結果確認OK・自由回答原文・同一ID再送の読戻しを確認しました'
+    '隔離台帳と実board.tsで初回読取り・キック済み・結果確認OK・自由回答原文・同一ID再送・取得失敗を確認しました',
 );

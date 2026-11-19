@@ -3,6 +3,7 @@ import {
     type Action,
     type AnswerContext,
     candidates,
+    commonView,
     type Operation,
     type PendingAnswer,
     type Registry,
@@ -14,6 +15,11 @@ import {
     type ResumedOperation,
     type RuntimeSelection,
 } from './gateway.ts';
+import {
+    parseUserActionsView,
+    UserActionsUnavailable,
+    type UserActionsView,
+} from './userActionsView.ts';
 
 export type Authority = {
     schemaVersion: 1;
@@ -48,10 +54,61 @@ export type RuntimeCommand = {
 );
 export interface RuntimeSnapshot {
     schemaVersion: 1;
-    mode: 'shadow' | 'authoritative';
+    mode: 'legacy' | 'shadow' | 'authoritative';
     generation: string;
     registry: Registry;
+    userActions?: UserActionsView;
     tasks: { id: string; version: number }[];
+}
+
+export function snapshotRegistry(
+    snapshot: RuntimeSnapshot,
+    epoch?: string,
+): Registry {
+    if (
+        snapshot.schemaVersion !== 1 ||
+        typeof snapshot.generation !== 'string' ||
+        !Array.isArray(snapshot.tasks) ||
+        snapshot.registry?.version !== 1 ||
+        !Array.isArray(snapshot.registry.actions)
+    )
+        throw new Error('常駐部の正本スナップショットを取得できません');
+    const view = parseUserActionsView(snapshot.userActions);
+    if (
+        view.source.mode !== snapshot.mode ||
+        (snapshot.mode === 'authoritative' &&
+            (!epoch || view.source.epoch !== epoch)) ||
+        (snapshot.mode !== 'authoritative' && epoch !== undefined)
+    )
+        throw new Error('共通一覧と正本のモード・世代が一致しません');
+    if (view.status === 'unavailable') throw new UserActionsUnavailable(view);
+    const versions = new Map<string, number>();
+    for (const task of snapshot.tasks) {
+        if (
+            typeof task.id !== 'string' ||
+            !Number.isSafeInteger(task.version) ||
+            task.version < 0 ||
+            versions.has(task.id)
+        )
+            throw new Error('常駐部のタスク版が不正です');
+        versions.set(task.id, task.version);
+    }
+    return {
+        ...snapshot.registry,
+        actions: view.rows.map(({ action }) => {
+            const { runtime: _runtime, ...raw } = action;
+            const version = raw.taskId ? versions.get(raw.taskId) : undefined;
+            return {
+                ...raw,
+                ...(epoch && raw.taskId && version !== undefined
+                    ? {
+                          runtime: { epoch, taskId: raw.taskId, version },
+                      }
+                    : {}),
+            };
+        }),
+        userActions: view,
+    };
 }
 export interface Receipt {
     commandId: string;
@@ -123,34 +180,11 @@ export class RuntimeGateway implements ActionGateway {
     async read(): Promise<Registry> {
         await this.guard();
         const s = await this.ports.snapshot();
-        if (
-            s.schemaVersion !== 1 ||
-            s.mode !== 'authoritative' ||
-            !Array.isArray(s.tasks) ||
-            s.registry.version !== 1 ||
-            !Array.isArray(s.registry.actions)
-        )
+        if (s.mode !== 'authoritative')
             throw new Error('常駐部の正本スナップショットを取得できません');
-        return {
-            ...s.registry,
-            actions: s.registry.actions.map((a) => {
-                const state = s.tasks.find((t) => t.id === a.taskId);
-                return {
-                    ...a,
-                    ...(state &&
-                    Number.isSafeInteger(state.version) &&
-                    state.version >= 0
-                        ? {
-                              runtime: {
-                                  epoch: this.epoch,
-                                  taskId: state.id,
-                                  version: state.version,
-                              },
-                          }
-                        : {}),
-                };
-            }),
-        };
+        const registry = snapshotRegistry(s, this.epoch);
+        await this.guard();
+        return registry;
     }
     private selected(action: Action): RuntimeSelection {
         const selection = action.runtime;
@@ -171,12 +205,19 @@ export class RuntimeGateway implements ActionGateway {
         action: Action,
         op: Operation,
     ): Promise<RuntimeSelection> {
-        const latest = candidates(await this.read(), op).find(
-            (a) => a.id === action.id,
-        );
+        const registry = await this.read();
+        const latest = candidates(registry, op).find((a) => a.id === action.id);
         if (!latest || revision(latest) !== revision(action))
             throw new Error(
                 '依頼またはタスクの版が変わりました。最新の依頼を選び直してください',
+            );
+        if (
+            op === 'complete' &&
+            commonView(registry).rows.find((row) => row.id === action.id)
+                ?.kind === 'decision'
+        )
+            throw new Error(
+                '判断の推奨完了は回答contextを通して記録してください',
             );
         return this.selected(action);
     }

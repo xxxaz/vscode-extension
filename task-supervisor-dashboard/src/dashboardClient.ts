@@ -37,6 +37,47 @@ interface SectionView {
     cards: Map<string, CardView>;
 }
 const operations = new Set(['complete', 'ran', 'answer']);
+const sourceLabels = {
+    legacy: '監督台帳',
+    shadow: '切替前の台帳',
+    authoritative: '常駐部の正本',
+} satisfies Record<BoardSnapshot['source'], string>;
+
+function displayTime(timestamp: number | null): string {
+    if (timestamp === null) return '時刻不明';
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime())
+        ? '時刻不明'
+        : date.toLocaleString('ja-JP');
+}
+
+function describeSnapshot(snapshot: BoardSnapshot): string {
+    const details = [
+        `更新 ${displayTime(snapshot.updatedAt)}`,
+        sourceLabels[snapshot.source],
+    ];
+    if (snapshot.workspace) details.push(snapshot.workspace);
+    const view = snapshot.userActions;
+    if (view) {
+        if (view.source.mode !== snapshot.source)
+            details.push(`依頼の取得元 ${sourceLabels[view.source.mode]}`);
+        details.push(
+            `依頼一覧の版 ${view.viewVersion ?? '不明'}`,
+            `取得時点 ${displayTime(view.source.fetchedAt)}`,
+        );
+        if (view.status === 'unavailable') {
+            const code = view.source.error?.code;
+            details.push(code ? `取得失敗（${code}）` : '取得失敗');
+            if (view.lastSuccessful) {
+                const { viewVersion, fetchedAt } = view.lastSuccessful;
+                details.push(
+                    `前回正常取得 ${displayTime(fetchedAt)}（版 ${viewVersion}）`,
+                );
+            }
+        }
+    }
+    return details.join(' · ');
+}
 
 function restoreState(value: unknown): SavedState {
     const fallback: SavedState = {
@@ -103,8 +144,9 @@ export function mountBoard(
         { kind: 'sections' | 'cards'; key: string }
     >();
     let busy = false;
+    let unavailable = false;
     let disposed = false;
-    let restored = false;
+    let hasSnapshot = false;
     const countButtons = new Map<string, HTMLButtonElement>();
     let supervisorButton: HTMLButtonElement | undefined;
     let warningSignature = '';
@@ -207,17 +249,20 @@ export function mountBoard(
         clickActions.set(button, () => followLink(link));
         return button;
     };
-    const setBusy = (value: boolean) => {
-        busy = value;
-        root.setAttribute('aria-busy', String(value));
+    const syncOperationButtons = () => {
         for (const button of root.querySelectorAll<HTMLButtonElement>(
             '.operation',
         )) {
-            button.disabled = value;
+            button.disabled = busy || unavailable;
         }
     };
+    const setBusy = (value: boolean) => {
+        busy = value;
+        root.setAttribute('aria-busy', String(value));
+        syncOperationButtons();
+    };
     const sendOperation = (operation: BoardOperation) => {
-        if (busy || !operations.has(operation.operation)) return;
+        if (busy || unavailable || !operations.has(operation.operation)) return;
         setBusy(true);
         status.hidden = false;
         status.dataset.state = 'busy';
@@ -243,13 +288,15 @@ export function mountBoard(
             section.empty.hidden = count !== 0;
             section.empty.textContent = query
                 ? '検索に一致する項目はありません。'
-                : '現在、該当する項目はありません。';
+                : unavailable
+                  ? '前回の取得時点で該当する項目はありません。'
+                  : '現在、該当する項目はありません。';
             section.count.textContent = query
                 ? `${count} / ${section.cards.size}件`
                 : `${section.cards.size}件`;
             visible += count;
         }
-        empty.hidden = visible > 0;
+        empty.hidden = !hasSnapshot || unavailable || visible > 0;
         empty.textContent = query
             ? '検索に一致する項目はありません。'
             : '表示する項目はありません。';
@@ -374,7 +421,7 @@ export function mountBoard(
             button.type = 'button';
             button.dataset.operation = operation.operation;
             setText(button, operation.label);
-            button.disabled = busy;
+            button.disabled = busy || unavailable;
             clickActions.set(button, () => sendOperation(operation));
             buttons.push(button);
         }
@@ -414,6 +461,10 @@ export function mountBoard(
         };
     };
     const render = (next: BoardSnapshot) => {
+        const firstSnapshot = !hasSnapshot;
+        hasSnapshot = true;
+        const wasUnavailable = unavailable;
+        unavailable = next.userActions?.status === 'unavailable';
         const previousCards = new Map<string, CardView>();
         for (const section of sections.values()) {
             for (const [id, card] of section.cards) {
@@ -442,11 +493,12 @@ export function mountBoard(
             scrollElement(),
             ...root.querySelectorAll('pre'),
         ].map((node) => [node, node.scrollTop, node.scrollLeft]);
-        const date = new Date(next.updatedAt);
-        setText(
-            metadata,
-            `更新 ${Number.isNaN(date.getTime()) ? '時刻不明' : date.toLocaleString('ja-JP')} · ${next.source === 'authoritative' ? '常駐部の正本' : '監督台帳'}${next.workspace ? ` · ${next.workspace}` : ''}`,
-        );
+        setText(metadata, describeSnapshot(next));
+        metadata.hidden = false;
+        if (firstSnapshot && status.dataset.state === 'failed') {
+            status.hidden = true;
+            status.textContent = '';
+        }
         if (next.supervisor) {
             const link = next.supervisor;
             supervisorButton ??= linkButton(link);
@@ -532,14 +584,14 @@ export function mountBoard(
                 );
         });
         applyFilter();
+        if (wasUnavailable !== unavailable) syncOperationButtons();
         for (const [node, top, left] of scrolls) {
             node.scrollTop = top;
             node.scrollLeft = left;
         }
         if (focused?.isConnected && doc.activeElement !== focused)
             focused.focus({ preventScroll: true });
-        if (!restored) {
-            restored = true;
+        if (firstSnapshot) {
             host.scrollTop = saved.scrollTop;
             scrollElement().scrollTop = saved.scrollTop;
         }
@@ -576,6 +628,7 @@ export function mountBoard(
             if (message.type === 'snapshot') render(message.snapshot);
             else {
                 setBusy(message.busy ?? false);
+                if (!hasSnapshot) metadata.hidden = Boolean(message.failed);
                 status.hidden = !message.message;
                 status.dataset.state = message.failed
                     ? 'failed'

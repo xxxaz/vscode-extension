@@ -16,8 +16,13 @@ import { setImmediate } from 'node:timers/promises';
 import { Ledger, revision } from '../src/boardClient.ts';
 import { BOARD_FILES, BoardReader } from '../src/boardReader.ts';
 import type { ActionGateway } from '../src/gateway.ts';
-import { runtimeIO } from '../src/runtimeFiles.ts';
-import { RuntimeGateway } from '../src/runtimeGateway.ts';
+import { UserActionsUnavailable } from '../src/userActionsView.ts';
+import {
+    noOperations,
+    readyView,
+    viewRow,
+    waitingForExecution,
+} from './viewFixture.ts';
 
 const directory = '.agents/ローカルタスク/監督';
 const task = {
@@ -42,6 +47,12 @@ const action = {
     createdAt: 3,
 };
 const initialRegistry = { version: 1, tasks: [task], actions: [action] };
+const rows = {
+    ...waitingForExecution,
+    operations: { ...noOperations, execute: true, complete: true },
+};
+const legacyView = async () =>
+    readyView([viewRow({ ...action, text: '共通CLIの依頼' }, rows, task)]);
 const authority = {
     schemaVersion: 1,
     mode: 'authoritative',
@@ -64,9 +75,12 @@ async function fixture(t: TestContext) {
         `${JSON.stringify({ at: 4, taskId: task.id, kind: 'test', text: '出来事の原文', by: 'codex' })}\n`,
     );
     const gateway = async (): Promise<ActionGateway> =>
-        new Ledger(root, async () => {
-            throw new Error('読取りでCLIは実行しません');
-        });
+        new Ledger(
+            root,
+            async () => assert.fail('更新CLIが呼ばれた'),
+            undefined,
+            legacyView,
+        );
     return {
         root,
         base,
@@ -75,46 +89,47 @@ async function fixture(t: TestContext) {
         reader: new BoardReader(root, { gateway }),
     };
 }
-async function runtimeFixture(t: TestContext) {
+async function runtimeFixture(
+    t: TestContext,
+    mode: 'authoritative' | 'shadow' = 'authoritative',
+) {
     const f = await fixture(t);
+    const runtimeTask = { ...task, title: '常駐部が正本' };
+    const runtimeAction = { ...action, text: '正本の依頼' };
     const snapshot = {
         schemaVersion: 1,
-        mode: 'authoritative',
+        mode,
         generation: 'process-1',
         registry: {
             ...initialRegistry,
-            tasks: [{ ...task, title: '常駐部が正本' }],
-            actions: [{ ...action, text: '正本の依頼' }],
+            tasks: [runtimeTask],
+            actions: initialRegistry.actions,
         },
         tasks: [{ id: task.id, version: 17 }],
+        userActions: readyView([viewRow(runtimeAction, rows, runtimeTask)], {
+            mode,
+            epoch: mode === 'authoritative' ? authority.epoch : null,
+            fetchedAt: 1000,
+            error: null,
+        }),
     };
-    await f.save('runtime/authority.json', authority);
+    if (mode === 'authoritative')
+        await f.save('runtime/authority.json', authority);
     await f.save('runtime/snapshot.json', snapshot);
     await f.save('runtime/heartbeat.json', {
         schemaVersion: 1,
         generation: 'process-1',
         at: Date.now(),
     });
-    const io = runtimeIO(f.root, async () => {
-        throw new Error('CLI呼出し禁止');
-    });
-    const gateway = async (): Promise<ActionGateway> =>
-        new RuntimeGateway(f.root, authority.epoch, {
-            ...io,
-            authority: async () =>
-                JSON.parse(
-                    await readFile(
-                        join(f.base, 'runtime/authority.json'),
-                        'utf8',
-                    ),
-                ),
-            journal: { get: () => undefined, set: async () => {} },
-        });
+    const gateway = async () =>
+        assert.fail('常駐スナップショット取得で別の読取りが呼ばれた');
+    const readLegacy = async () =>
+        assert.fail('常駐スナップショット取得で旧CLIが呼ばれた');
     return {
         ...f,
         snapshot,
         gateway,
-        reader: new BoardReader(f.root, { gateway }),
+        reader: new BoardReader(f.root, { gateway, legacyView: readLegacy }),
     };
 }
 
@@ -125,6 +140,8 @@ test('4原票を読み、原稿の注意・出来事・mtimeを投影する', as
     assert.ok(value.warnings.includes('観測キャッシュの注意'));
     assert.ok(JSON.stringify(value.sections).includes('出来事の原文'));
     assert.ok(JSON.stringify(value.sections).includes(task.title));
+    assert.ok(JSON.stringify(value.sections).includes('共通CLIの依頼'));
+    assert.ok(!JSON.stringify(value.sections).includes(action.text));
     const modificationTimes = await Promise.all(
         BOARD_FILES.slice(0, 4).map(
             async (path) => (await stat(join(f.root, path))).mtimeMs,
@@ -132,6 +149,54 @@ test('4原票を読み、原稿の注意・出来事・mtimeを投影する', as
     );
     assert.equal(value.updatedAt, Math.max(...modificationTimes));
     assert.equal((await f.reader.read()).updatedAt, value.updatedAt);
+});
+
+test('旧経路の表示は指定された共通読取りを使い、操作ポートを開かない', async (t) => {
+    const f = await fixture(t);
+    let calls = 0;
+    const reader = new BoardReader(f.root, {
+        gateway: async () =>
+            assert.fail('旧経路の明示読取りで操作ポートが呼ばれた'),
+        legacyView: async () => {
+            calls++;
+            return legacyView();
+        },
+    });
+    const value = await reader.read();
+    assert.equal(calls, 1);
+    assert.equal(
+        value.userActions?.viewVersion,
+        (await legacyView()).viewVersion,
+    );
+    assert.ok(JSON.stringify(value.sections).includes('共通CLIの依頼'));
+});
+
+test('旧経路で公式CLIのshadowを表示し、authoritativeまたは世代付き応答を拒否する', async (t) => {
+    const f = await fixture(t);
+    const view = await legacyView();
+    const read = (
+        mode: 'shadow' | 'authoritative' | 'legacy',
+        epoch: string | null,
+    ) =>
+        new BoardReader(f.root, {
+            gateway: async () =>
+                assert.fail('明示した共通読取りで操作ポートが呼ばれた'),
+            legacyView: async () => ({
+                ...view,
+                source: { ...view.source, mode, epoch },
+            }),
+        });
+    const reader = read('shadow', null);
+    const snapshot = await reader.read();
+    assert.equal(snapshot.source, 'shadow');
+    assert.equal(snapshot.userActions?.source.mode, 'shadow');
+    assert.equal(reader.usesRuntimeSnapshot(), false);
+    for (const [mode, epoch] of [
+        ['authoritative', null],
+        ['shadow', 'epoch-1'],
+        ['legacy', 'epoch-1'],
+    ] as const)
+        await assert.rejects(read(mode, epoch).read(), /モード・世代/);
 });
 
 test('任意3原票の不在は空値と警告、registry不在は失敗する', async (t) => {
@@ -182,7 +247,7 @@ test('切替準備中は旧台帳を返さず、消失後も戻さない', async
     );
 });
 
-test('正本では旧registryを読まずgatewayと同じ版の操作を投影する', async (t) => {
+test('正本は共通の依頼と同じスナップショット内の更新用タスク版を投影する', async (t) => {
     const f = await runtimeFixture(t);
     await writeFile(
         join(f.base, 'registry.json'),
@@ -192,21 +257,53 @@ test('正本では旧registryを読まずgatewayと同じ版の操作を投影�
     assert.equal(value.source, 'authoritative');
     assert.ok(JSON.stringify(value.sections).includes('常駐部が正本'));
     assert.ok(JSON.stringify(value.sections).includes('正本の依頼'));
-    const selected = (await (await f.gateway()).read()).actions[0];
-    const operations = value.sections.flatMap((section) =>
-        section.cards.flatMap((card) => card.operations),
-    );
-    assert.ok(operations.length > 0);
+    assert.ok(!JSON.stringify(value.sections).includes(action.text));
+    const card = value.sections
+        .flatMap((section) => section.cards)
+        .find((entry) => entry.id === action.id);
+    assert.ok(card);
+    const [row] = f.snapshot.userActions.rows;
+    const target = {
+        ...row.action,
+        runtime: { epoch: authority.epoch, taskId: task.id, version: 17 },
+    };
+    assert.ok(card.operations.length > 0);
     assert.ok(
-        operations.every(
-            (operation) => operation.revision === revision(selected),
+        card.operations.every(
+            (operation) => operation.revision === revision(target),
         ),
     );
+    await f.save('runtime/snapshot.json', {
+        ...f.snapshot,
+        userActions: {
+            ...f.snapshot.userActions,
+            viewVersion: '次の一覧の表示版',
+            rows: [{ ...row, version: '次の行の表示版' }],
+        },
+    });
+    const updated = await f.reader.read();
+    const updatedCard = updated.sections
+        .flatMap((section) => section.cards)
+        .find((entry) => entry.id === card.id);
+    assert.ok(updatedCard);
+    assert.equal(updated.userActions?.viewVersion, '次の一覧の表示版');
+    assert.ok(JSON.stringify(updatedCard.fields).includes('次の行の表示版'));
+    assert.deepEqual(updatedCard.operations, card.operations);
     await rm(join(f.base, 'runtime/authority.json'));
     await assert.rejects(f.reader.read(), /消失/);
 });
 
-test('正本snapshot不在・破損・モード不一致で旧台帳へ戻さない', async (t) => {
+test('正本切替前はshadowを読み、一度読んだスナップショットの消失時は旧台帳へ戻さない', async (t) => {
+    const f = await runtimeFixture(t, 'shadow');
+    const value = await f.reader.read();
+    assert.equal(value.source, 'shadow');
+    assert.equal(value.userActions?.source.mode, 'shadow');
+    assert.ok(JSON.stringify(value.sections).includes('正本の依頼'));
+    await rm(join(f.base, 'runtime/snapshot.json'));
+    await assert.rejects(f.reader.read(), /消失|ENOENT/);
+});
+
+test('正本スナップショットの欠落・破損・モードや世代の不一致では旧台帳へ戻さない', async (t) => {
     const f = await runtimeFixture(t);
     await rm(join(f.base, 'runtime/snapshot.json'));
     await assert.rejects(f.reader.read(), { code: 'ENOENT' });
@@ -214,41 +311,77 @@ test('正本snapshot不在・破損・モード不一致で旧台帳へ戻さな
     await assert.rejects(f.reader.read());
     await f.save('runtime/snapshot.json', { ...f.snapshot, mode: 'shadow' });
     await assert.rejects(f.reader.read(), /正本スナップショット/);
+    const view = f.snapshot.userActions;
+    await f.save('runtime/snapshot.json', {
+        ...f.snapshot,
+        userActions: { ...view, source: { ...view.source, epoch: 'epoch-2' } },
+    });
+    await assert.rejects(f.reader.read(), /モード・世代が一致しません/);
 });
 
-test('heartbeat初回不在・古い・未来は参考表示し、既読後の消失・破損は拒否する', async (t) => {
+test('heartbeat初回不在・古い・未来・異なる世代・破損では一覧の更新を拒否する', async (t) => {
     const f = await runtimeFixture(t);
     await rm(join(f.base, 'runtime/heartbeat.json'));
-    assert.ok(
-        (await f.reader.read()).warnings.some((warning) =>
-            warning.includes('参考表示'),
-        ),
-    );
-    for (const at of [Date.now() - 31_000, Date.now() + 60_000]) {
+    await assert.rejects(f.reader.read(), /稼働|heartbeat/);
+    for (const [at, generation] of [
+        [Date.now() - 31_000, 'process-1'],
+        [Date.now() + 60_000, 'process-1'],
+        [Date.now(), 'process-2'],
+    ] as const) {
         await f.save('runtime/heartbeat.json', {
             schemaVersion: 1,
-            generation: 'process-1',
+            generation,
             at,
         });
-        const value = await f.reader.read();
-        assert.equal(value.source, 'authoritative');
-        assert.ok(
-            value.warnings.some((warning) => warning.includes('参考表示')),
-        );
+        await assert.rejects(f.reader.read(), /稼働|heartbeat/);
     }
+    await f.save('runtime/heartbeat.json', {
+        schemaVersion: 1,
+        generation: 'process-1',
+        at: Date.now(),
+        snapshotError: '最新スナップショットの保存に失敗',
+    });
+    await assert.rejects(f.reader.read(), /スナップショット保存結果/);
+    await f.save('runtime/heartbeat.json', {
+        schemaVersion: 1,
+        generation: 'process-1',
+        at: Date.now(),
+    });
+    assert.equal((await f.reader.read()).source, 'authoritative');
     await rm(join(f.base, 'runtime/heartbeat.json'));
-    await assert.rejects(f.reader.read(), { code: 'ENOENT' });
+    await assert.rejects(f.reader.read(), /稼働|heartbeat/);
     await writeFile(join(f.base, 'runtime/heartbeat.json'), '{');
     await assert.rejects(f.reader.read());
 });
 
-test('gateway取得中のsnapshot置換は再試行し、一致する最新版を返す', async (t) => {
+test('最新の稼働記録でも正本に不一致があれば保存済みスナップショットを拒否する', async (t) => {
+    const f = await runtimeFixture(t);
+    assert.equal((await f.reader.read()).userActions?.status, 'ready');
+    await f.save('runtime/heartbeat.json', {
+        schemaVersion: 1,
+        generation: f.snapshot.generation,
+        at: Date.now(),
+        authorityError: '正本のDBと切替記録が一致しません',
+    });
+    await assert.rejects(f.reader.read(), /正本のDBと切替記録が一致しません/);
+});
+
+test('常駐部の詳細が未対応であることを常駐スナップショットを読む画面に表示する', async (t) => {
+    const warning = /孤立・稼働・待機・報告.*一覧だけで正常/;
+    for (const mode of ['authoritative', 'shadow'] as const) {
+        const f = await runtimeFixture(t, mode);
+        assert.match((await f.reader.read()).warnings.join('\n'), warning);
+    }
+    const f = await fixture(t);
+    assert.doesNotMatch((await f.reader.read()).warnings.join('\n'), warning);
+});
+
+test('スナップショット取得中に置換されれば再読取りし、置換後の版を返す', async (t) => {
     const f = await runtimeFixture(t);
     let calls = 0;
-    const baseGateway = await f.gateway();
-    const gateway: ActionGateway = {
-        root: f.root,
-        read: async () => {
+    const value = await new BoardReader(f.root, {
+        gateway: f.gateway,
+        markAuthorityObserved: async () => {
             calls++;
             if (calls === 1) {
                 const next = {
@@ -257,6 +390,10 @@ test('gateway取得中のsnapshot置換は再試行し、一致する最新版�
                         ...f.snapshot.registry,
                         tasks: [{ ...task, title: '置換後の正本' }],
                     },
+                    userActions: {
+                        ...f.snapshot.userActions,
+                        viewVersion: '置換後の一覧版',
+                    },
                 };
                 await f.save('runtime/next.json', next);
                 await rename(
@@ -264,18 +401,11 @@ test('gateway取得中のsnapshot置換は再試行し、一致する最新版�
                     join(f.base, 'runtime/snapshot.json'),
                 );
             }
-            return baseGateway.read();
         },
-        complete: baseGateway.complete.bind(baseGateway),
-        answerContext: baseGateway.answerContext.bind(baseGateway),
-        answer: baseGateway.answer.bind(baseGateway),
-        hasAnswer: baseGateway.hasAnswer.bind(baseGateway),
-    };
-    const value = await new BoardReader(f.root, {
-        gateway: async () => gateway,
     }).read();
-    assert.ok(calls >= 2);
+    assert.ok(calls >= 3);
     assert.ok(JSON.stringify(value.sections).includes('置換後の正本'));
+    assert.equal(value.userActions?.viewVersion, '置換後の一覧版');
 });
 
 test('mtimeは実ファイル更新に追従し、読取り時刻で進めない', async (t) => {
@@ -297,8 +427,8 @@ test('破損した切替記録を見た後も旧台帳へ戻さない', async (t
     await assert.rejects(f.reader.read(), /消失/);
 });
 
-test('gatewayの取得失敗を空の成功表示へ変換しない', async (t) => {
-    const f = await runtimeFixture(t);
+test('旧共通読取りの失敗を空の成功表示へ変換しない', async (t) => {
+    const f = await fixture(t);
     const reader = new BoardReader(f.root, {
         gateway: async () => {
             throw new Error('最新情報の取得失敗');
@@ -307,37 +437,126 @@ test('gatewayの取得失敗を空の成功表示へ変換しない', async (t) 
     await assert.rejects(reader.read(), /最新情報の取得失敗/);
 });
 
-test('正本のepochが読取り中に変われば最新版で再取得する', async (t) => {
-    const f = await runtimeFixture(t);
+test('旧台帳が破損しても正式読取りが返した取得失敗の情報を保持する', async (t) => {
+    const f = await fixture(t);
+    const view = {
+        schemaVersion: 1,
+        status: 'unavailable',
+        viewVersion: '台帳破損時の表示版',
+        source: {
+            mode: 'shadow',
+            epoch: null,
+            fetchedAt: null,
+            error: {
+                code: 'registry-read-failed',
+                message: '旧台帳が破損しています',
+            },
+        },
+        rows: null,
+    } as const;
+    await writeFile(join(f.base, 'registry.json'), '{');
     let calls = 0;
-    let epoch = authority.epoch;
     const reader = new BoardReader(f.root, {
         gateway: async () => {
             calls++;
-            if (calls === 1) {
-                epoch = 'epoch-2';
-                await f.save('runtime/authority.json', { ...authority, epoch });
-            }
-            const gateway = await f.gateway();
-            return {
-                root: gateway.root,
-                read: async () => ({
-                    ...f.snapshot.registry,
-                    actions: f.snapshot.registry.actions.map((row) => ({
-                        ...row,
-                        runtime: { epoch, taskId: task.id, version: 17 },
-                    })),
-                }),
-                complete: gateway.complete.bind(gateway),
-                answerContext: gateway.answerContext.bind(gateway),
-                answer: gateway.answer.bind(gateway),
-                hasAnswer: gateway.hasAnswer.bind(gateway),
-            };
+            return new Ledger(
+                f.root,
+                async () => assert.fail('更新CLIが呼ばれた'),
+                undefined,
+                async () => view,
+            );
+        },
+    });
+    await assert.rejects(reader.read(), (error) => {
+        assert.equal(calls, 1, '補足の台帳を解析する前に正式読取りを呼ぶ');
+        assert.ok(error instanceof UserActionsUnavailable);
+        assert.deepEqual(error.view, view);
+        return true;
+    });
+});
+
+test('共通一覧の取得失敗をエラーの版・理由・前回取得時刻付きで返す', async (t) => {
+    const f = await runtimeFixture(t);
+    const view = {
+        ...f.snapshot.userActions,
+        status: 'unavailable',
+        viewVersion: '失敗時の表示版',
+        source: {
+            ...f.snapshot.userActions.source,
+            error: {
+                code: 'SOURCE_UNAVAILABLE',
+                message: '共通一覧を取得できません',
+            },
+        },
+        rows: null,
+    };
+    await f.save('runtime/snapshot.json', { ...f.snapshot, userActions: view });
+    await assert.rejects(f.reader.read(), (error) => {
+        assert.ok(error instanceof UserActionsUnavailable);
+        assert.deepEqual(error.view, view);
+        return true;
+    });
+});
+
+test('正本のepochが読取り中に変われば最新版で再取得する', async (t) => {
+    const f = await runtimeFixture(t);
+    const observed: string[] = [];
+    const reader = new BoardReader(f.root, {
+        gateway: f.gateway,
+        markAuthorityObserved: async (epoch) => {
+            observed.push(epoch);
+            if (observed.length !== 1) return;
+            const next = 'epoch-2';
+            const view = f.snapshot.userActions;
+            await f.save('runtime/next-snapshot.json', {
+                ...f.snapshot,
+                userActions: {
+                    ...view,
+                    source: { ...view.source, epoch: next },
+                },
+            });
+            await f.save('runtime/next-authority.json', {
+                ...authority,
+                epoch: next,
+            });
+            await rename(
+                join(f.base, 'runtime/next-snapshot.json'),
+                join(f.base, 'runtime/snapshot.json'),
+            );
+            await rename(
+                join(f.base, 'runtime/next-authority.json'),
+                join(f.base, 'runtime/authority.json'),
+            );
         },
     });
     const value = await reader.read();
     assert.equal(value.source, 'authoritative');
-    assert.ok(calls >= 2);
+    assert.equal(value.userActions?.source.epoch, 'epoch-2');
+    assert.equal(observed[0], authority.epoch);
+    assert.equal(observed.at(-1), 'epoch-2');
+});
+
+test('正本のスナップショットだけを観測しても旧経路への復帰を永続的に拒否する', async (t) => {
+    const f = await runtimeFixture(t);
+    await rm(join(f.base, 'runtime/authority.json'));
+    const observed: string[] = [];
+    const options = {
+        gateway: f.gateway,
+        authoritySeen: () => observed.length > 0,
+        markAuthorityObserved: async (epoch: string) => {
+            observed.push(epoch);
+        },
+    };
+    await assert.rejects(
+        new BoardReader(f.root, options).read(),
+        /切替記録が消失/,
+    );
+    assert.deepEqual(observed, ['snapshot-authoritative']);
+    await rm(join(f.base, 'runtime/snapshot.json'));
+    await assert.rejects(
+        new BoardReader(f.root, options).read(),
+        /切替記録が消失/,
+    );
 });
 
 test('リポジトリURLを投影へ渡し、観測未取得のPRリンクを解決する', async (t) => {

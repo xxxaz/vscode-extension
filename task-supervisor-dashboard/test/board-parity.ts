@@ -4,6 +4,10 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { projectBoard } from '../src/boardModel.ts';
 import type { BoardCard, BoardSnapshot } from '../src/dashboardTypes.ts';
+import {
+    parseUserActionsView,
+    type UserActionSource,
+} from '../src/userActionsView.ts';
 
 type Row = Record<string, unknown>;
 class ParityError extends Error {}
@@ -89,9 +93,9 @@ async function main(): Promise<void> {
         readJson(directory, 'archive.json'),
         readJson(directory, 'state.json'),
         readEvents(directory),
-        loadModule(skillDirectory, 'registry.ts'),
         loadModule(skillDirectory, 'render.ts'),
         loadModule(skillDirectory, 'narrative.ts'),
+        loadModule(skillDirectory, 'user-actions/project.ts'),
     ]);
     for (const result of loaded)
         if (result.status === 'rejected') throw result.reason;
@@ -102,13 +106,26 @@ async function main(): Promise<void> {
     const archive = object(values[1], 'アーカイブ');
     const state = object(values[2], '状態');
     const events = rows(values[3], 'イベント');
-    const registryModule = object(values[4], '正本registry');
-    const renderModule = object(values[5], '正本render');
-    const narrativeModule = object(values[6], '正本narrative');
+    const renderModule = object(values[4], '正本render');
+    const narrativeModule = object(values[5], '正本narrative');
+    const userActionsModule = object(values[6], '共通の依頼一覧');
+    const projectUserActions = helper<
+        [{ registry: Row; source: UserActionSource & { error: null } }],
+        unknown
+    >(userActionsModule, 'projectUserActions');
+    const userActions = parseUserActionsView(
+        projectUserActions({
+            registry,
+            source: { mode: 'legacy', epoch: null, fetchedAt: 0, error: null },
+        }),
+    );
+    if (userActions.status !== 'ready')
+        throw new ParityError('正本から共通の依頼一覧を取得できませんでした');
     let snapshot: BoardSnapshot;
     try {
         snapshot = projectBoard({
             registry,
+            userActions,
             archive,
             state,
             events,
@@ -120,7 +137,6 @@ async function main(): Promise<void> {
             '原票を表示投影へ変換できませんでした。原票の形式を確認してください',
         );
     }
-    const actions = rows(registry.actions, '依頼');
     const tasks = rows(registry.tasks, 'タスク');
     const facts =
         state.facts === undefined
@@ -135,23 +151,6 @@ async function main(): Promise<void> {
                   warnings: [],
               }
             : object(state.facts, '事実キャッシュ');
-    const isActionable = helper<[Row, Row], boolean>(
-        registryModule,
-        'isActionable',
-    );
-    const isHeldAction = helper<[Row, Row], boolean>(
-        registryModule,
-        'isHeldAction',
-    );
-    const isAwaitingResult = helper<[Row], boolean>(
-        registryModule,
-        'isAwaitingResult',
-    );
-    const sortActions = helper<[Row[]], Row[]>(registryModule, 'sortActions');
-    const userActionKind = helper<[Row], string>(
-        registryModule,
-        'userActionKind',
-    );
     const sortTasks = helper<[Row[]], Row[]>(renderModule, 'sortTasks');
     const formatTime = helper<[number], string>(renderModule, 'formatTime');
     const statusLines = helper<
@@ -163,32 +162,39 @@ async function main(): Promise<void> {
         if (!section) throw new ParityError(`表示区分${id}がありません`);
         return section.cards;
     };
-    const groups = [
-        {
-            id: 'execution',
-            label: '実行待ち',
-            test: (a: Row) =>
-                isActionable(a, registry) && userActionKind(a) === 'execution',
-        },
-        {
-            id: 'decision',
-            label: '判断待ち',
-            test: (a: Row) =>
-                isActionable(a, registry) && userActionKind(a) === 'decision',
-        },
-        {
-            id: 'held',
-            label: '保留・前提待ち',
-            test: (a: Row) => isHeldAction(a, registry),
-        },
-        { id: 'awaiting', label: '実行済み・結果待ち', test: isAwaitingResult },
-    ];
-    for (const group of groups)
+    const sections = new Map<string, string[]>([
+        ['execution', []],
+        ['decision', []],
+        ['held', []],
+        ['executed', []],
+        ['awaiting', []],
+    ]);
+    const sectionByLifecycle = {
+        unexecuted: 'execution',
+        decision: 'decision',
+        executed: 'executed',
+        'awaiting-result': 'awaiting',
+        completed: null,
+        withdrawn: null,
+    };
+    for (const row of userActions.rows) {
+        const section = sectionByLifecycle[row.lifecycle];
+        if (section !== null)
+            sections
+                .get(row.availability.held ? 'held' : section)
+                ?.push(row.id);
+    }
+    for (const [section, expectedIds] of sections)
         equal(
-            cards(group.id).map((c) => c.id),
-            ids(sortActions(actions.filter(group.test))),
-            `${group.label}の分類と依頼順`,
+            cards(section).map((c) => c.id),
+            expectedIds,
+            `${section}の分類と依頼順`,
         );
+    equal(
+        snapshot.userActions?.viewVersion,
+        userActions.viewVersion,
+        '依頼一覧の表示版',
+    );
     equal(
         cards('tasks').map((c) => c.id),
         ids(
@@ -220,7 +226,7 @@ async function main(): Promise<void> {
                 .slice(expected.length + 1)
                 .some(
                     (p) =>
-                        !/^(?:👤 実行待ち \d+ \/ 判断待ち \d+|⏸ 保留中の依頼 \d+|⏳ 結果の確認待ち \d+|✅ 完了候補)$/.test(
+                        !/^(?:👤 実行待ち \d+ \/ 判断待ち \d+|⏸ 保留中の依頼 \d+|⏳ (?:実行済み（完了待ち）|結果の確認待ち) \d+|✅ 完了候補)$/.test(
                             p.text,
                         ),
                 )
@@ -228,7 +234,7 @@ async function main(): Promise<void> {
             throw new ParityError('ステータスの補足に正本にない行があります');
     }
     console.log(
-        `検証成功: 依頼${actions.length}件、分類4区分、進行タスク${cards('tasks').length}件、未完了タスク補足${unfinished.length}件、アーカイブ${rows(archive.tasks, 'アーカイブタスク').length}件`,
+        `検証成功: 依頼${userActions.rows.length}件、分類${sections.size}区分、進行タスク${cards('tasks').length}件、未完了タスク補足${unfinished.length}件、アーカイブ${rows(archive.tasks, 'アーカイブタスク').length}件`,
     );
 }
 
