@@ -123,6 +123,50 @@ function setup(saved?: unknown) {
     return { dom, host, mounted, update, messages, click, row, state, close };
 }
 
+test('コピーはIDと表示版だけを送り、更新後も同じボタンと開閉を保持する', () => {
+    const app = setup();
+    try {
+        const initial = card();
+        initial.command = {
+            id: 'U1',
+            revision: 'a'.repeat(64),
+            text: 'echo 原文',
+        };
+        app.update(snapshot([initial]));
+        app.row('U1').open = true;
+        const button =
+            app.host.querySelector<HTMLButtonElement>('.copy-command')!;
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'a'.repeat(64),
+        });
+        assert.notEqual(app.host.getAttribute('aria-busy'), 'true');
+        const changed = {
+            ...initial,
+            command: {
+                ...initial.command,
+                revision: 'b'.repeat(64),
+                text: 'echo 更新',
+            },
+        };
+        app.update(snapshot([changed]));
+        assert.equal(app.host.querySelector('.copy-command'), button);
+        assert.equal(app.row('U1').open, true);
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'b'.repeat(64),
+        });
+        app.update(snapshot([card()]));
+        assert.equal(app.host.querySelector('.copy-command'), null);
+    } finally {
+        app.close();
+    }
+});
+
 test('一覧は全項目・コマンド・件数・監督・対象ルートを省略せず文字として表示する', () => {
     const app = setup();
     try {
@@ -476,7 +520,8 @@ test('Webviewはnonce付きのCSSとscriptだけを許可しHTML属性をエス�
     );
     try {
         assert.equal(
-            unsafe.window.document.getElementById('board')?.dataset.workspaceUri,
+            unsafe.window.document.getElementById('board')?.dataset
+                .workspaceUri,
             'file:///x"><img src=x onerror=bad>',
         );
         assert.equal(

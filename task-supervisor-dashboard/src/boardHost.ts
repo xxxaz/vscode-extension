@@ -22,6 +22,16 @@ export function parseBoardMessage(value: unknown): BoardMessage | undefined {
     )
         return { type: 'open', linkId: value.linkId };
     if (
+        value.type === 'copy-command' &&
+        'id' in value &&
+        typeof value.id === 'string' &&
+        /^U\d+[A-Z]*$/.test(value.id) &&
+        'revision' in value &&
+        typeof value.revision === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.revision)
+    )
+        return { type: 'copy-command', id: value.id, revision: value.revision };
+    if (
         value.type === 'operation' &&
         'operation' in value &&
         (value.operation === 'complete' ||
@@ -40,6 +50,24 @@ export function parseBoardMessage(value: unknown): BoardMessage | undefined {
             id: value.id,
             revision: value.revision,
         };
+}
+export async function copyBoardCommand(
+    snapshot: BoardSnapshot,
+    message: Extract<BoardMessage, { type: 'copy-command' }>,
+    clipboard: { writeText(value: string): PromiseLike<void> },
+): Promise<void> {
+    const command = snapshot.sections
+        .flatMap((section) => section.cards)
+        .find(
+            (card) =>
+                card.command?.id === message.id &&
+                card.command.revision === message.revision,
+        )?.command;
+    if (!command?.text.trim())
+        throw new Error(
+            '一覧のコマンドが更新されました。最新の行を確認してください',
+        );
+    await clipboard.writeText(command.text);
 }
 export function findBoardLink(
     snapshot: BoardSnapshot,

@@ -34,6 +34,7 @@ export interface BoardCard {
     fields: BoardField[];
     links: BoardLink[];
     operations: BoardOperation[];
+    command?: { id: string; revision: string; text: string };
 }
 export interface BoardSection {
     id: string;
@@ -55,6 +56,7 @@ export interface BoardSnapshot {
 export type BoardMessage =
     | { type: 'ready' | 'refresh' }
     | { type: 'open'; linkId: string }
+    | { type: 'copy-command'; id: string; revision: string }
     | { type: 'operation'; operation: Operation; id: string; revision: string };
 export type BoardUpdate =
     | { type: 'snapshot'; snapshot: BoardSnapshot }
