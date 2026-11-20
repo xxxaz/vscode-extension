@@ -765,6 +765,15 @@ export function projectBoard(input: {
             );
         if (v.needsOk)
             fields.push(field('完了条件', text('結果を確認して OK なら完了')));
+        else if (kind(v) === 'execution' && v.ranAt === undefined)
+            fields.push(
+                field(
+                    'キック済みの記録',
+                    text(
+                        '結果確認が不要な依頼のキック記録は、この版では未対応です。実行が終わり確認できたら完了を記録してください。',
+                    ),
+                ),
+            );
         if (v.after?.length)
             fields.push(field('前提', text(v.after.join('・'))));
         const operations: BoardCard['operations'] =

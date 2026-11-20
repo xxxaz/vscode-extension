@@ -86,7 +86,7 @@ export async function record(
         if (!rows.length) {
             ui.info(
                 operation === 'ran'
-                    ? 'キック済みを記録できる未完了の実行依頼はありません'
+                    ? 'キック済みを記録できる依頼はありません。この版では結果確認が必要な未完了の実行依頼だけが対象です'
                     : 'この操作の対象となる未完了の依頼はありません',
             );
             return;

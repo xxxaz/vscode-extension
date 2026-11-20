@@ -1,17 +1,18 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { type Interaction, record } from '../src/actions.ts';
+import { captureAnswer } from '../src/answerEditor.ts';
 import {
-    Ledger,
-    candidates,
     type Action,
+    candidates,
+    Ledger,
     type PendingAnswer,
     type Registry,
+    revision,
 } from '../src/boardClient.ts';
-import { record, type Interaction } from '../src/actions.ts';
-import { captureAnswer } from '../src/answerEditor.ts';
 
 const action = (extra: Partial<Action> = {}): Action => ({
     id: 'U1',
@@ -37,7 +38,7 @@ async function setup(a: Action) {
     const infos: string[] = [];
     const errors: string[] = [];
     const draft = new Map<string, PendingAnswer>();
-    let inputs = ['利用者'];
+    const inputs = ['利用者'];
     let commandId = '';
     const run = async (args: string[]): Promise<string> => {
         calls.push(args);
@@ -121,11 +122,11 @@ test('保留・前提・取り下げ・完了を除外し実行と判断を選�
     };
     assert.deepEqual(
         candidates(r, 'complete').map((a) => a.id),
-        ['U1']
+        ['U1'],
     );
     assert.deepEqual(
         candidates(r, 'answer').map((a) => a.id),
-        ['U2']
+        ['U2'],
     );
 });
 test('完了は明示確認後に--okを渡し台帳のdoneを読戻す', async () => {
@@ -151,7 +152,7 @@ test('キック済みを完了と混同しない', async () => {
 });
 test('自由回答は原文・回答者・開始時の版・操作IDをanswerへ渡す', async () => {
     await using f = await setup(
-        action({ kind: 'decision', command: undefined })
+        action({ kind: 'decision', command: undefined }),
     );
     await record('answer', f.ledger, f.ui, f.drafts);
     const args = f.calls[1];
@@ -164,7 +165,7 @@ test('自由回答は原文・回答者・開始時の版・操作IDをanswerへ
 });
 test('推奨回答は固定の推奨文を保存する', async () => {
     await using f = await setup(
-        action({ kind: 'decision', command: undefined })
+        action({ kind: 'decision', command: undefined }),
     );
     f.ui.choice = async () => 'recommended';
     await record('answer', f.ledger, f.ui, f.drafts);
@@ -172,13 +173,13 @@ test('推奨回答は固定の推奨文を保存する', async () => {
 });
 test('古いCLIのhelp出力を回答API成功として扱わない', async () => {
     await using f = await setup(
-        action({ kind: 'decision', command: undefined })
+        action({ kind: 'decision', command: undefined }),
     );
     await record(
         'answer',
         new Ledger(f.root, async () => 'board.ts help'),
         f.ui,
-        f.drafts
+        f.drafts,
     );
     assert.match(f.errors[0], /回答APIが未対応/);
     assert.equal(f.a.done, false);
@@ -191,14 +192,14 @@ test('CLI非0と終了0だが未保存のとき成功を表示しない', async 
             throw new Error('CLI失敗');
         }),
         f.ui,
-        f.drafts
+        f.drafts,
     );
     assert.match(f.errors[0], /CLI失敗/);
     await record(
         'complete',
         new Ledger(f.root, async () => ''),
         f.ui,
-        f.drafts
+        f.drafts,
     );
     assert.match(f.errors[1], /記録を確認できません/);
     assert.deepEqual(f.infos, []);
@@ -216,7 +217,7 @@ test('確認中に依頼が変われば完了を拒否する', async () => {
 });
 test('回答失敗後の再送では原文と操作IDを保持する', async () => {
     await using f = await setup(
-        action({ kind: 'decision', command: undefined })
+        action({ kind: 'decision', command: undefined }),
     );
     let failed = true;
     const ledger = new Ledger(f.root, async (args) => {
@@ -254,7 +255,7 @@ test('自由原文は無題エディターのgetTextから改行と空白を変�
                 return true;
             },
         },
-        '前の下書き'
+        '前の下書き',
     );
     assert.equal(result, raw);
     assert.deepEqual(order, ['open', 'show', 'confirm']);
@@ -268,23 +269,40 @@ test('自由原文は無題エディターのgetTextから改行と空白を変�
             show: async () => {},
             confirm: async () => false,
         }),
-        undefined
+        undefined,
     );
 });
-test('結果確認不要の実行依頼もキック候補に含める', async () => {
-    await using f = await setup(action({ needsOk: false }));
-    assert.equal(candidates(f.registry, 'ran').length, 1);
-    await record('ran', f.ledger, f.ui, f.drafts);
-    assert.deepEqual(f.calls, [['ran', 'U1']]);
-    assert.equal(f.a.done, false);
-});
+for (const needsOk of [false, undefined]) {
+    test(`結果確認不要(${needsOk})の依頼はキック候補から外し完了は維持する`, async () => {
+        await using f = await setup(action({ needsOk }));
+        assert.deepEqual(candidates(f.registry, 'ran'), []);
+        await record('ran', f.ledger, f.ui, f.drafts);
+        assert.deepEqual(f.calls, []);
+        assert.equal(f.a.done, false);
+        assert.match(f.infos.join('\n'), /結果確認が必要/);
+        await record('complete', f.ledger, f.ui, f.drafts);
+        assert.deepEqual(f.calls, [['done', 'U1']]);
+        assert.equal(f.a.done, true);
+    });
+    test(`結果確認不要(${needsOk})の旧行から届いたキック要求もCLIを呼ばない`, async () => {
+        await using f = await setup(action({ needsOk }));
+        await record('ran', f.ledger, f.ui, f.drafts, {
+            id: f.a.id,
+            revision: revision(f.a),
+        });
+        assert.deepEqual(f.calls, []);
+        assert.equal(f.a.done, false);
+        await assert.rejects(f.ledger.complete(f.a, 'ran'), /依頼が更新/);
+        assert.deepEqual(f.calls, []);
+    });
+}
 test('URL資料版は入力開始時に取得し両CLIへ同じ値を渡す', async () => {
     await using f = await setup(
         action({
             kind: 'decision',
             doc: 'https://example.com/decision',
             command: undefined,
-        })
+        }),
     );
     f.inputs.splice(0, f.inputs.length, '改訂2', '利用者');
     await record('answer', f.ledger, f.ui, f.drafts);
@@ -304,7 +322,7 @@ test('URL資料版の取消と空欄では回答を送信しない', async () =>
             kind: 'decision',
             doc: 'https://example.com/decision',
             command: undefined,
-        })
+        }),
     );
     f.ui.input = async () => undefined;
     await record('answer', f.ledger, f.ui, f.drafts);
