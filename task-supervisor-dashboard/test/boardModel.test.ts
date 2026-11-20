@@ -8,6 +8,37 @@ import type {
     BoardSnapshot,
 } from '../src/dashboardTypes.ts';
 
+test('コマンドの原文コピーは保留中も使え、空コマンドには付けない', () => {
+    const raw = "  printf '%s\\n' '$HOME'\nnode ./cli.ts  ";
+    const source = request('U1', { command: raw, holdReason: '前提確認中' });
+    const board = projectBoard(
+        input({
+            registry: {
+                version: 1,
+                tasks: [task()],
+                actions: [
+                    source,
+                    request('U2', { command: '' }),
+                    request('U3', { command: ' \n ' }),
+                ],
+            },
+        }),
+    );
+    assert.deepEqual(cards(board, 'held')[0].command, {
+        id: 'U1',
+        revision: revision(source),
+        text: raw,
+    });
+    assert.equal(
+        cards(board, 'execution').find((c) => c.id === 'U2')?.command,
+        undefined,
+    );
+    assert.equal(
+        cards(board, 'execution').find((c) => c.id === 'U3')?.command,
+        undefined,
+    );
+});
+
 const task = (id = 'T1', extra = {}) => ({
     id,
     title: `タスク${id}`,

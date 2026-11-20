@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
+import type { BoardUpdate } from '../src/dashboardTypes.ts';
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
@@ -20,8 +22,38 @@ const bundle = buildSync({
     write: false,
 }).outputFiles[0].text;
 
-async function host(mode: 'retry' | 'removed' | 'untrusted') {
+const command = [
+    "  printf '%s\\n' '$VALUE | & >' \\",
+    '    "$(printf test)"  ',
+    '',
+].join('\n');
+
+async function host(
+    mode: 'normal' | 'retry' | 'removed' | 'untrusted',
+    clipboardError?: Error,
+) {
     const root = await mkdtemp(join(tmpdir(), 't341-panel-host-'));
+    if (mode === 'normal') {
+        const ledger = join(root, '.agents', 'ローカルタスク', '監督');
+        await mkdir(ledger, { recursive: true });
+        await writeFile(
+            join(ledger, 'registry.json'),
+            JSON.stringify({
+                version: 1,
+                tasks: [],
+                actions: [
+                    {
+                        id: 'U341',
+                        kind: 'execution',
+                        text: 'コピーの確認',
+                        command,
+                        done: false,
+                        createdAt: 1,
+                    },
+                ],
+            }),
+        );
+    }
     const uri = (path: string) => ({
         scheme: 'file',
         fsPath: path,
@@ -29,10 +61,12 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
     });
     const folder = { name: '監督', index: 0, uri: uri(root) };
     const messages: string[] = [];
+    const updates: BoardUpdate[] = [];
+    const clipboardWrites: string[] = [];
     const commands = new Map<string, () => Promise<void>>();
     const panels: {
         disposed: boolean;
-        webview: { html: string };
+        webview: { html: string; receive(value: unknown): void };
         dispose(): void;
     }[] = [];
     const subscriptions: { dispose(): void }[] = [];
@@ -58,6 +92,14 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
     };
     const api = {
         workspace,
+        env: {
+            clipboard: {
+                async writeText(value: string) {
+                    clipboardWrites.push(value);
+                    if (clipboardError) throw clipboardError;
+                },
+            },
+        },
         Uri: {
             joinPath: (base: ReturnType<typeof uri>, ...parts: string[]) =>
                 uri(join(base.fsPath, ...parts)),
@@ -78,6 +120,7 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
             },
             createWebviewPanel() {
                 const listeners = new Set<() => void>();
+                let onMessage: ((value: unknown) => void) | undefined;
                 const panel = {
                     title: '',
                     disposed: false,
@@ -85,8 +128,23 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
                         html: '',
                         cspSource: 'vscode-webview://test',
                         options: {},
-                        postMessage() {},
-                        onDidReceiveMessage: disposable,
+                        postMessage(value: BoardUpdate) {
+                            updates.push(value);
+                        },
+                        onDidReceiveMessage(
+                            callback: (value: unknown) => void,
+                        ) {
+                            onMessage = callback;
+                            return {
+                                dispose() {
+                                    onMessage = undefined;
+                                },
+                            };
+                        },
+                        receive(value: unknown) {
+                            assert.ok(onMessage);
+                            onMessage(value);
+                        },
                         asWebviewUri: (value: unknown) => value,
                     },
                     onDidDispose(callback: () => void) {
@@ -140,6 +198,11 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
     return {
         panels,
         messages,
+        clipboardWrites,
+        updates,
+        revokeTrust() {
+            workspace.isTrusted = false;
+        },
         get initializes() {
             return initializes;
         },
@@ -163,6 +226,18 @@ async function host(mode: 'retry' | 'removed' | 'untrusted') {
             await rm(root, { recursive: true, force: true });
         },
     };
+}
+
+async function copyCommand(app: Awaited<ReturnType<typeof host>>) {
+    const update = app.updates.find((value) => value.type === 'snapshot');
+    const card = update?.snapshot.sections
+        .flatMap((section) => section.cards)
+        .find((value) => value.id === 'U341');
+    assert.ok(card?.command);
+    const { id, revision } = card.command;
+    app.panels[0].webview.receive({ type: 'copy-command', id, revision });
+    await setImmediate();
+    return app.updates.filter((value) => value.type === 'status');
 }
 
 test('実activateの監視初期化失敗から再度開くと再試行し、未処理rejectを残さない', async () => {
@@ -195,3 +270,53 @@ for (const mode of ['removed', 'untrusted'] as const) {
         }
     });
 }
+
+test('実activateで一覧のコマンド原文をコピーし、成功を表示する', async () => {
+    const app = await host('normal');
+    try {
+        await app.open();
+        const statuses = await copyCommand(app);
+        assert.deepEqual(app.clipboardWrites, [command]);
+        const status = statuses.at(-1);
+        assert.equal(status?.state, 'success');
+        assert.match(status.message, /U341 のコマンドをコピーしました/);
+    } finally {
+        await app.close();
+    }
+});
+
+test('実activateでクリップボードへの書込みに失敗したらエラーを表示する', async () => {
+    const app = await host(
+        'normal',
+        new Error('クリップボードが利用できません'),
+    );
+    try {
+        await app.open();
+        const statuses = await copyCommand(app);
+        assert.deepEqual(app.clipboardWrites, [command]);
+        assert.equal(
+            statuses.some((status) => status.state === 'success'),
+            false,
+        );
+        const status = statuses.at(-1);
+        assert.equal(status?.state, 'error');
+        assert.match(status.message, /クリップボードが利用できません/);
+    } finally {
+        await app.close();
+    }
+});
+
+test('実activateで一覧を開いた後に信頼を解除したらコピーを拒否する', async () => {
+    const app = await host('normal');
+    try {
+        await app.open();
+        app.revokeTrust();
+        const statuses = await copyCommand(app);
+        assert.deepEqual(app.clipboardWrites, []);
+        const status = statuses.at(-1);
+        assert.equal(status?.state, 'error');
+        assert.match(status.message, /ワークスペースの信頼が解除されました/);
+    } finally {
+        await app.close();
+    }
+});

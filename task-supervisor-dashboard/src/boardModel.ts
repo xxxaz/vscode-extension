@@ -797,6 +797,15 @@ export function projectBoard(input: {
             fields,
             links: [],
             operations,
+            ...(v.command?.trim()
+                ? {
+                      command: {
+                          id: v.id,
+                          revision: revision(v),
+                          text: v.command,
+                      },
+                  }
+                : {}),
         };
     };
     const taskCard = (t: Task): BoardCard => {
