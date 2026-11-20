@@ -1,7 +1,23 @@
 # Task Supervisor
 
 監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。0.3.0では常駐部と同じ共通の依頼一覧を使い、表示版・取得状態を明示します。Markdownへは書き戻しません。
-更新日: 2026-11-19。
+更新日: 2026-11-20。
+
+## 開発候補: 本人実行のportとfixture
+
+資料・コマンド・実行結果のDB保存はU1898で採用されました。この候補は、既存の0.3.0共通read候補へ未配線のprocess/表示portを追加した準備段階です。正式受付・DB・実Node process・DevContainerの所在確認adapterは未接続です。製品の実行ボタンを追加せず、この候補のVSIX配布・実コマンド実行も行いません。既存の0.2.1/0.2.2/0.2.3/0.3.0と親PRは保全します。
+
+`executionRunner.ts`は正式なcontext/claimをopaque型としてadapterへ委譲します。私有portのpreviewは固定版の資料本文とコマンド全文です。明示確認・所在の再確認・永続起動ラッチ・一度限りのclaimを通し、同じ本文をBashのstdinへ渡す起動要求を人工processへ接続します。実adapterはまだなく、端末のsendTextやagent daemonの本人実行経路は追加しません。起動ファイルや継承された関数を本文へ混ぜないBashオプションも固定します。
+
+spawnを観測した後に開始保存を待ちます。claimの結果不明・開始保存失敗・close不明・終了保存失敗でもラッチを解除せず、自動再実行しません。終了コード・signal・unknownと出力保存状態は別です。終了のack後も正本readと照合し、exit0をUの完了へ変換しません。
+
+`executionCapture.ts`はstreamごとの未完UTF-8を保持します。共通seqは復号が確定して生成した出力片の観測順であり、OS発生順や未完文字の最初のbyte到着順ではありません。この境界はT342/T337との正式型の照合対象です。不正なUTF-8や末尾切断を無印で置換しません。保存不明byteと、drainして保存しなかったbyteを区別します。
+
+上限は正本から注入する私有設定で、既定値を複製しません。本文byte上限と片数上限を持ち、全体のJSON化後の容量予約はT342の正式受付へ委譲します。入力は有界とし、未ackの片を並列に増やさず1片ずつ待ちます。timeout・容量超過ではdrainへ移り、無制限メモリ保持・tmpへの退避・無断killをしません。保存成功のack後に限定readを照合してから表示します。read失敗は保存済みbyteと画面取得失敗を分けます。現在の私有portは1片ずつ保存し、coalescing/batchは未実装です。Nodeの実stream adapterでは、このpullに合わせてstdout/stderrをpause/resumeし、観測順の有界queueを実装する必要があります。
+
+`executionView.ts`は固定版の資料/コマンド全文の確認と、結果閲覧の私有表示です。本人表示・DB保存・担当AIへの開示・needsOkを分けます。AI開示未設定は許可へ変換しません。閲覧設定は保存後readまで保存済みと表示せず、結果不明時は再取得まで変更を止めます。これらのUIは正式なread/受付adapterに未接続です。機密原文とAI開示の既定値はT342の判断資料を待ちます。
+
+正式な操作型・CLI・capabilities、runner登録/実行場所の束縛、原子容量予約、形式3の移行とexport/restore、機密条件がそろってから接続します。この候補を理由に既存回答API・一般ran・全文保持patchの正式反映を待たせません。
 
 ## 一覧を開く
 
@@ -89,20 +105,21 @@ code --install-extension <task-supervisor-dashboard-0.3.0.vsixのパス> --force
 
 ## 実装の配置
 
-| ファイル                                                   | 責務                                                         |
-| ---------------------------------------------------------- | ------------------------------------------------------------ |
-| `src/extension.ts`                                         | VS Codeの入口・監視・一覧と操作の接続                        |
-| `src/dashboardPanels.ts`                                   | 中央タブの再利用・Serializerによる同じワークスペースへの復元 |
-| `src/boardReader.ts`                                       | 4原票と常駐正本の読取り・整合確認                            |
-| `src/boardModel.ts`                                        | 共通行の順序と状態を保った表示項目の純粋な投影               |
-| `src/userActionsView.ts`                                   | 共通wireの検証・表示用取得状態・操作候補の対応               |
-| `src/boardFeed.ts`                                         | 更新の集約・直列読取り・失敗時の表示保持                     |
-| `src/dashboardTypes.ts`                                    | 表示データと固定メッセージの契約                             |
-| `src/dashboardClient.ts`                                   | キー付きDOMの差分更新と状態保持                              |
-| `src/dashboardWebview.ts` / `dashboardEntry.ts`            | テーマとCSP・バンドル入口                                    |
-| `src/actions.ts` / `answerEditor.ts`                       | 確認と原文入力・行指定・回答の保持                           |
-| `src/boardClient.ts` / `gateway.ts`                        | 既存台帳CLIと共通の操作ポート                                |
-| `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts` | 正本選択・契約v1操作・結果の照会                             |
-| `test/`                                                    | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー          |
+| ファイル                                                              | 責務                                                         |
+| --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `src/extension.ts`                                                    | VS Codeの入口・監視・一覧と操作の接続                        |
+| `src/dashboardPanels.ts`                                              | 中央タブの再利用・Serializerによる同じワークスペースへの復元 |
+| `src/boardReader.ts`                                                  | 4原票と常駐正本の読取り・整合確認                            |
+| `src/boardModel.ts`                                                   | 共通行の順序と状態を保った表示項目の純粋な投影               |
+| `src/userActionsView.ts`                                              | 共通wireの検証・表示用取得状態・操作候補の対応               |
+| `src/boardFeed.ts`                                                    | 更新の集約・直列読取り・失敗時の表示保持                     |
+| `src/dashboardTypes.ts`                                               | 表示データと固定メッセージの契約                             |
+| `src/dashboardClient.ts`                                              | キー付きDOMの差分更新と状態保持                              |
+| `src/dashboardWebview.ts` / `dashboardEntry.ts`                       | テーマとCSP・バンドル入口                                    |
+| `src/actions.ts` / `answerEditor.ts`                                  | 確認と原文入力・行指定・回答の保持                           |
+| `src/boardClient.ts` / `gateway.ts`                                   | 既存台帳CLIと共通の操作ポート                                |
+| `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts`            | 正本選択・契約v1操作・結果の照会                             |
+| `src/executionCapture.ts` / `executionRunner.ts` / `executionView.ts` | 未配線の本人実行process/表示portと人工fixture用の境界        |
+| `test/`                                                               | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー          |
 
 本文はテキストノードとして表示し、Webviewから実行ファイル・任意のCLI引数・任意URLを受け付けません。リンクも現在の表示にあるIDから解決します。CSPはnonce付きの固定スクリプトとCSSに限定します。

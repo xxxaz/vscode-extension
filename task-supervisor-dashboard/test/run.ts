@@ -1,4 +1,7 @@
 import './actions.test.ts';
+import './executionCapture.test.ts';
+import './executionRunner.test.ts';
+import './executionView.test.ts';
 import './userActionsView.test.ts';
 import './boardFeed.test.ts';
 import './runtime.test.ts';
