@@ -94,6 +94,35 @@ const links = (s: BoardSnapshot): BoardLink[] => [
     ),
 ];
 
+test('一般の実行待ちにはキック済みを出さず、結果確認が必要な依頼と完了は残す', () => {
+    const snapshot = projectBoard(
+        input({
+            registry: {
+                version: 1,
+                tasks: [task('T1')],
+                actions: [
+                    request('U1855', { needsOk: false }),
+                    request('U2'),
+                    request('U3', { needsOk: true }),
+                ],
+            },
+        }),
+    );
+    const rows = cards(snapshot, 'execution');
+    for (const id of ['U1855', 'U2']) {
+        const row = rows.find((c) => c.id === id)!;
+        assert.deepEqual(
+            row.operations.map((o) => o.operation),
+            ['complete'],
+        );
+        assert.match(fields(row), /この版では未対応/);
+    }
+    assert.deepEqual(
+        rows.find((c) => c.id === 'U3')!.operations.map((o) => o.operation),
+        ['complete', 'ran'],
+    );
+});
+
 test('依頼は正本の実行・判断・保留・結果待ちへ分類し、優先度と作成時刻で並べる', () => {
     const actions = [
         request('U1', { priority: 2, createdAt: 1 }),
