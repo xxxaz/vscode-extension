@@ -251,9 +251,11 @@ export function mountBoard(
     };
     const syncOperationButtons = () => {
         for (const button of root.querySelectorAll<HTMLButtonElement>(
-            '.operation',
+            '.operation, .copy-command',
         )) {
-            button.disabled = busy || unavailable;
+            button.disabled =
+                unavailable ||
+                (busy && !button.classList.contains('copy-command'));
         }
     };
     const setBusy = (value: boolean) => {
@@ -421,13 +423,15 @@ export function mountBoard(
             button.type = 'button';
             button.dataset.operation = 'copy-command';
             button.textContent = 'コマンドをコピー';
-            clickActions.set(button, () =>
+            button.disabled = unavailable;
+            clickActions.set(button, () => {
+                if (unavailable) return;
                 post({
                     type: 'copy-command',
                     id: command.id,
                     revision: command.revision,
-                }),
-            );
+                });
+            });
             buttons.push(button);
         }
         for (const operation of card.operations) {

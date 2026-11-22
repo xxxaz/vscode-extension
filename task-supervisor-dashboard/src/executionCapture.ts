@@ -251,6 +251,8 @@ export class ExecutionCapture {
             }
             this.facts.savedBytes += part.byteLength;
             this.facts.lastAckSequence = part.sequence;
+            // 未完了readを片ごとに増やさず、表示の再取得は別の明示操作へ委ねる。
+            if (this.facts.displayUnavailable) continue;
             try {
                 const saved = await withDeadline(
                     this.port.readSaved(part.sequence),

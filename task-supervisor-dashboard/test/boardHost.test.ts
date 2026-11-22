@@ -64,6 +64,27 @@ test('コピーは表示モデルのコマンド原文を使い、古い版と�
     assert.deepEqual(parseBoardMessage(message), message);
     await copyBoardCommand(board, message, clipboard);
     assert.deepEqual(copied, [command]);
+    await assert.rejects(
+        copyBoardCommand(
+            {
+                ...board,
+                userActions: {
+                    status: 'unavailable',
+                    viewVersion: 'failed',
+                    source: {
+                        mode: 'legacy',
+                        epoch: null,
+                        fetchedAt: null,
+                        error: { code: 'read-failed', message: '停止' },
+                    },
+                },
+            },
+            message,
+            clipboard,
+        ),
+        /一覧を取得できません/,
+    );
+    assert.deepEqual(copied, [command]);
     for (const changed of [
         { ...message, id: 'U2' },
         { ...message, revision: 'b'.repeat(64) },

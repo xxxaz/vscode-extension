@@ -14,6 +14,7 @@ import type {
 import { ExecutionRunner } from '../src/executionRunner.ts';
 import { nodeExecutionProcess } from '../src/nodeExecutionProcess.ts';
 import {
+    KnownRecordRejection,
     type RecordChannel,
     RecordConnection,
     recordCaptureLimits,
@@ -139,6 +140,11 @@ const channel: RecordChannel = {
         submitted.push(structuredClone(c));
         const result = store.apply(parseRecordCommand(c), Date.now(), caller);
         assert.equal(result.commandId, c.commandId);
+        if (result.status === 'rejected')
+            throw new KnownRecordRejection(
+                result.message,
+                result.code === 'version-conflict',
+            );
         assert.equal(result.status, 'applied', result.message);
         assert.equal(result.code, 'ok');
         assert.ok(result.data?.record);
@@ -191,15 +197,48 @@ const document = await connection.document(
     published.record.document.documentId,
     published.record.document.revision,
 );
+const prepareReferences: RecordCommand[] = [];
+const approval = {
+    command,
+    allowed: async () => true,
+    confirm: async (
+        preview: Readonly<import('../src/executionRunner.ts').ExecutionPreview>,
+    ) => {
+        assert.equal(preview.command, command);
+        assert.equal(Object.isFrozen(preview), true);
+        return true;
+    },
+    keepReference: async (c: Readonly<RecordCommand>) => {
+        prepareReferences.push(structuredClone(c));
+    },
+};
+const beforeCancel = submitted.length;
+assert.equal(
+    await connection.prepare(
+        'U1',
+        store.requestContext('U1').requestVersion,
+        isolated,
+        [document],
+        { ...approval, confirm: async () => false },
+    ),
+    null,
+);
+assert.equal(submitted.length, beforeCancel);
+assert.equal(prepareReferences.length, 0);
 const context = await connection.prepare(
     'U1',
     store.requestContext('U1').requestVersion,
     isolated,
     [document],
+    approval,
 );
+assert.ok(context);
 assert.equal(context.preview.command, command);
 assert.equal(context.preview.documents[0].body, document.body);
-const access = connection.disclosure(context.attempt.attemptId);
+const access = connection.disclosure(
+    context.attempt.attemptId,
+    async () => true,
+);
 let view = await access.read();
 assert.equal(view.aiDisclosure, 'denied');
 await access.changeDisclosure(view.context, true);
@@ -210,11 +249,6 @@ const shown: string[] = [],
     warnings: string[] = [];
 const ui: Parameters<RecordConnection['runner']>[0] = {
     allowed: async (c) => c.attempt.runnerId === caller.runnerId,
-    confirm: async (preview) => {
-        assert.equal(preview.command, command);
-        assert.equal(Object.isFrozen(preview), true);
-        return true;
-    },
     reserveLocalLaunch: async (key) => {
         if (reserved.has(key)) return false;
         reserved.add(key);
@@ -287,11 +321,13 @@ const limitedContext = await limitedConnection.prepare(
     'U2',
     store.requestContext('U2').requestVersion,
     isolated,
+    [],
+    approval,
 );
+assert.ok(limitedContext);
 const limitedPort = limitedConnection.runner({
     ...ui,
     allowed: async () => true,
-    confirm: async () => true,
 });
 const limitedResult = await new ExecutionRunner(limitedPort, {
     ...recordCaptureLimits,
@@ -317,7 +353,10 @@ const conflictContext = await conflictConnection.prepare(
     'U3',
     store.requestContext('U3').requestVersion,
     isolated,
+    [],
+    approval,
 );
+assert.ok(conflictContext);
 const concurrent = store.apply(
     {
         schemaVersion: 1,
@@ -341,7 +380,6 @@ const conflictResult = await new ExecutionRunner(
     conflictConnection.runner({
         ...ui,
         allowed: async () => true,
-        confirm: async () => true,
     }),
     recordCaptureLimits,
 ).run(conflictContext);

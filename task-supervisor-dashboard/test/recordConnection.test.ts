@@ -11,6 +11,7 @@ import type {
 } from '../src/contracts/records.ts';
 import { ExecutionCapture, OutputNotStored } from '../src/executionCapture.ts';
 import {
+    KnownRecordRejection,
     type RecordChannel,
     RecordConnection,
     recordCaptureLimits,
@@ -18,6 +19,115 @@ import {
 
 const command = "printf '原文\\n'";
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+test('DB準備より前に全文確認し、取消と参照保存失敗では容量予約の受付を送らない', async () => {
+    const f = fixture();
+    let references = 0;
+    const result = await f.connection.prepare(
+        'U1',
+        'request-version',
+        '/workspace',
+        [],
+        {
+            ...f.approval,
+            confirm: async (p) => {
+                assert.equal(p.command, command);
+                return false;
+            },
+            keepReference: async () => {
+                references++;
+            },
+        },
+    );
+    assert.equal(result, null);
+    assert.equal(references, 0);
+    assert.equal(f.commands.length, 0);
+    await assert.rejects(
+        f.connection.prepare('U1', 'request-version', '/workspace', [], {
+            ...f.approval,
+            keepReference: async () => {
+                throw Error('参照保存不可');
+            },
+        }),
+    );
+    assert.equal(f.commands.length, 0);
+    assert.ok(await f.prepare());
+});
+test('正式adapterが発行していないcontextと差替えた本文はclaim前に拒否する', async () => {
+    const f = fixture(),
+        original = await f.prepare(),
+        port = f.connection.runner({ ...f.ui, allowed: async () => true });
+    const forged = {
+        ...original,
+        preview: { ...original.preview, command: '別の実行本文' },
+    };
+    assert.equal(await port.allowed(forged), false);
+    await assert.rejects(port.claim(forged), /確認済みcontext/);
+    assert.equal(f.commands.length, 1);
+});
+test('開示版の既知拒否後は明示再読取りの版で取消でき、応答不明後は変更を無効にする', async () => {
+    const f = fixture(),
+        access = f.connection.disclosure(f.attempt.attemptId, async () => true);
+    const old = await access.read();
+    f.value.state.disclosure = {
+        ...f.value.state.disclosure,
+        revision: 1,
+        allow: true,
+    };
+    let first = true;
+    f.setSubmit((c) => {
+        if (first) {
+            first = false;
+            throw new KnownRecordRejection('開示版の競合');
+        }
+        assert.equal(c.type, 'execution.disclosure');
+        if (c.type !== 'execution.disclosure') throw Error();
+        assert.equal(c.payload.expectedRevision, 1);
+        f.value.state.disclosure = {
+            revision: 2,
+            allow: c.payload.allow,
+            changedBy: 'person',
+            changedAt: 3,
+        };
+        return { disclosureRevision: 2 };
+    });
+    await assert.rejects(access.changeDisclosure(old.context, false));
+    const fresh = await access.read();
+    assert.equal(fresh.canChangeDisclosure, true);
+    await access.changeDisclosure(fresh.context, false);
+    assert.equal((await access.read()).aiDisclosure, 'denied');
+    assert.notEqual(f.commands[0].commandId, f.commands[1].commandId);
+    const unknown = fixture(),
+        blocked = unknown.connection.disclosure(
+            unknown.attempt.attemptId,
+            async () => true,
+        );
+    unknown.setSubmit(() => {
+        throw Error('通信不明');
+    });
+    await assert.rejects(
+        blocked.changeDisclosure((await blocked.read()).context, true),
+    );
+    assert.equal((await blocked.read()).canChangeDisclosure, false);
+    await assert.rejects(
+        blocked.changeDisclosure((await blocked.read()).context, false),
+    );
+    assert.equal(unknown.commands.length, 1);
+});
+test('metadata-onlyと開示変更権限未確認は本人の本文表示とせず変更操作を送らない', async () => {
+    for (const metadata of [true, false]) {
+        const f = fixture();
+        if (metadata) Reflect.deleteProperty(f.value.attempt, 'command');
+        const access = f.connection.disclosure(
+            f.attempt.attemptId,
+            async () => metadata,
+        );
+        const view = await access.read();
+        assert.equal(view.canChangeDisclosure, false);
+        if (metadata) assert.match(view.userDisplay, /メタデータのみ/);
+        await assert.rejects(access.changeDisclosure(view.context, true));
+        assert.equal(f.commands.length, 0);
+    }
+});
 function fixture() {
     const attempt: ExecutionAttempt = {
         schemaVersion: 1,
@@ -92,6 +202,23 @@ function fixture() {
     );
     const shown: string[] = [],
         warnings: string[] = [];
+    const approval = {
+        command,
+        allowed: async () => true,
+        confirm: async () => true,
+        keepReference: async () => {},
+    };
+    const prepare = async () => {
+        const c = await connection.prepare(
+            'U1',
+            'request-version',
+            '/workspace',
+            [],
+            approval,
+        );
+        assert.ok(c);
+        return c;
+    };
     const ui = {
         allowed: async () => false,
         confirm: async () => false,
@@ -108,6 +235,8 @@ function fixture() {
         value,
         commands,
         connection,
+        approval,
+        prepare,
         ui,
         shown,
         warnings,
@@ -118,7 +247,7 @@ function fixture() {
 }
 test('正式な固定実行原票を読み、表示版ではなく保存後のタスク版を次の操作に渡す', async () => {
     const f = fixture();
-    const c = await f.connection.prepare('U1', 'request-version', '/workspace');
+    const c = await f.prepare();
     assert.equal(c.preview.command, command);
     assert.equal(Object.isFrozen(c.attempt), true);
     const port = f.connection.runner(f.ui);
@@ -137,12 +266,8 @@ test('task版の競合や応答不明の後は新しい版への差替えも同I
     f.setSubmit(() => {
         throw new Error('version-conflict');
     });
-    await assert.rejects(
-        f.connection.prepare('U1', 'request-version', '/workspace'),
-    );
-    await assert.rejects(
-        f.connection.prepare('U1', 'request-version', '/workspace'),
-    );
+    await assert.rejects(f.prepare());
+    await assert.rejects(f.prepare());
     assert.equal(f.commands.length, 1);
 });
 test('固定本文の欠落・hash違い・所属違いを現在の依頼で補わない', async () => {
@@ -159,19 +284,13 @@ test('固定本文の欠落・hash違い・所属違いを現在の依頼で補�
     ]) {
         const f = fixture();
         change(f);
-        await assert.rejects(
-            f.connection.prepare('U1', 'request-version', '/workspace'),
-        );
+        await assert.rejects(f.prepare());
     }
 });
 test('appliedだけのackを保存済みにせず、stored=false/drain=trueは確定した欠落として数える', async () => {
     for (const rejected of [false, true]) {
         const f = fixture(),
-            c = await f.connection.prepare(
-                'U1',
-                'request-version',
-                '/workspace',
-            );
+            c = await f.prepare();
         f.setSubmit(() =>
             rejected ? { stored: false, drain: true } : { seq: 1 },
         );
@@ -216,7 +335,10 @@ test('stream別の不正UTF8・末尾欠落・不明ackを正式終了値に渡�
 });
 test('開示変更は実行前も終了後も版を照合し、保存後の正式readで確認する', async () => {
     const f = fixture();
-    const access = f.connection.disclosure(f.attempt.attemptId);
+    const access = f.connection.disclosure(
+        f.attempt.attemptId,
+        async () => true,
+    );
     f.setSubmit((c) => {
         assert.equal(c.type, 'execution.disclosure');
         if (c.type !== 'execution.disclosure') throw Error();

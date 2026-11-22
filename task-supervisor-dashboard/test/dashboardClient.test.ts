@@ -1106,6 +1106,25 @@ test('コピーはIDと表示版だけを送り、更新後も同じボタンと
         app.update(snapshot([changed]));
         assert.equal(app.host.querySelector('.copy-command'), button);
         assert.equal(app.row('U1').open, true);
+        const stopped = snapshot([changed]);
+        stopped.userActions = {
+            status: 'unavailable',
+            viewVersion: 'stopped',
+            source: {
+                mode: 'legacy',
+                epoch: null,
+                fetchedAt: null,
+                error: { code: 'read-failed', message: '停止' },
+            },
+        };
+        app.update(stopped);
+        assert.equal(button.disabled, true);
+        const messages = app.messages.length;
+        button.click();
+        assert.equal(app.messages.length, messages);
+        app.update(snapshot([changed]));
+        assert.equal(app.host.querySelector('.copy-command'), button);
+        assert.equal(button.disabled, false);
         button.click();
         assert.deepEqual(app.messages.at(-1), {
             type: 'copy-command',

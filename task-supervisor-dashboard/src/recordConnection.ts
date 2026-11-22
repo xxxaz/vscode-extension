@@ -34,9 +34,24 @@ export interface PreparedExecution {
     readonly attempt: Readonly<ExecutionAttempt>;
     readonly preview: Readonly<ExecutionPreview>;
 }
+export interface PrepareApproval {
+    command: string;
+    allowed(): Promise<boolean>;
+    confirm(preview: Readonly<ExecutionPreview>): Promise<boolean>;
+    // DB受付前に小さいprepare操作とIDを保存する。本文・出力を別正本へ複製しない。
+    keepReference(command: Readonly<RecordCommand>): Promise<void>;
+}
+// 正式な非適用拒否を確認したtransportだけが使用する。通信不明と混同しない。
+export class KnownRecordRejection extends Error {
+    readonly taskVersionConflict: boolean;
+    constructor(message: string, taskVersionConflict = false) {
+        super(message);
+        this.taskVersionConflict = taskVersionConflict;
+    }
+}
 type UiPort = Pick<
     RunnerPort<PreparedExecution, PreparedExecution>,
-    'allowed' | 'confirm' | 'reserveLocalLaunch' | 'launch' | 'status'
+    'allowed' | 'reserveLocalLaunch' | 'launch' | 'status'
 > & {
     showSaved(part: Readonly<ObservedOutput>): void;
     warning(message: string): void;
@@ -62,6 +77,8 @@ const matchAttempt = (value: ExecutionReadResult, fixed: ExecutionAttempt) => {
 export class RecordConnection {
     private taskVersion: number;
     private tail: Promise<unknown> = Promise.resolve();
+    private writable = true;
+    private readonly issued = new WeakSet<PreparedExecution>();
     private readonly channel: RecordChannel;
     private readonly taskId: string;
     private readonly source: string;
@@ -82,8 +99,15 @@ export class RecordConnection {
         this.taskId = taskId;
         this.source = source;
     }
-    private send(operation: RecordOperation) {
+    private send(
+        operation: RecordOperation,
+        beforeSend?: (command: Readonly<RecordCommand>) => Promise<void>,
+    ) {
         const pending = this.tail.then(async () => {
+            if (!this.writable)
+                throw new Error(
+                    '受付の結果不明またはTask版競合です。変更を停止しています',
+                );
             const command: RecordCommand = {
                 schemaVersion: 1,
                 commandId: randomUUID(),
@@ -92,17 +116,30 @@ export class RecordConnection {
                 source: this.source,
                 ...operation,
             };
-            const receipt = await this.channel.submit(command);
+            await beforeSend?.(Object.freeze(structuredClone(command)));
+            let receipt: Awaited<ReturnType<RecordChannel['submit']>>;
+            try {
+                receipt = await this.channel.submit(command);
+            } catch (error) {
+                if (
+                    !(error instanceof KnownRecordRejection) ||
+                    error.taskVersionConflict
+                )
+                    this.writable = false;
+                throw error;
+            }
             if (
                 !Number.isSafeInteger(receipt.taskVersion) ||
                 receipt.taskVersion < this.taskVersion
-            )
+            ) {
+                this.writable = false;
                 throw new Error('保存後のタスク版が不正です');
+            }
             this.taskVersion = receipt.taskVersion;
             return receipt.record;
         });
-        // 応答不明・版競合の後に新版を取得して後続変更を送らない。
-        this.tail = pending;
+        // 既知の拒否だけは明示read後の新しい操作を許す。不明/Task版競合は停止する。
+        this.tail = pending.catch(() => undefined);
         return pending;
     }
     execution(attemptId: string) {
@@ -140,12 +177,36 @@ export class RecordConnection {
         actionId: string,
         requestVersion: string,
         cwd: string,
-        documents: readonly DocumentRecord[] = [],
-    ): Promise<PreparedExecution> {
-        const receipt = await this.send({
-            type: 'execution.prepare',
-            payload: { actionId, requestVersion },
+        documents: readonly DocumentRecord[],
+        approval: PrepareApproval,
+    ): Promise<PreparedExecution | null> {
+        for (const doc of documents)
+            if (doc.taskId !== this.taskId || doc.sha256 !== sha(doc.body))
+                throw new Error('資料の所属または固定本文が一致しません');
+        const preview = Object.freeze({
+            command: approval.command,
+            requestLabel: actionId,
+            workingDirectory: cwd,
+            documents: Object.freeze(
+                documents.map((d) =>
+                    Object.freeze({
+                        label: `${d.title} (${d.documentId}@${d.revision})`,
+                        body: d.body,
+                    }),
+                ),
+            ),
         });
+        if (!preview.command.trim() || !cwd || !(await approval.allowed()))
+            return null;
+        if (!(await approval.confirm(preview))) return null;
+        if (!(await approval.allowed())) return null;
+        const receipt = await this.send(
+            {
+                type: 'execution.prepare',
+                payload: { actionId, requestVersion },
+            },
+            approval.keepReference,
+        );
         if (!receipt.attemptId) throw new Error('保存された実行IDがありません');
         const value = await this.execution(receipt.attemptId);
         const a = value.attempt;
@@ -155,36 +216,38 @@ export class RecordConnection {
             a.actionId !== actionId ||
             a.requestVersion !== requestVersion ||
             a.commandSha256 !== sha(a.command) ||
+            a.command !== preview.command ||
             a.executionWhere !== 'devcontainer' ||
             value.state.status !== 'prepared'
         )
             throw new Error('準備した固定版の実行原票を取得できません');
-        for (const doc of documents)
-            if (doc.taskId !== this.taskId || doc.sha256 !== sha(doc.body))
-                throw new Error('資料の所属または固定本文が一致しません');
-        return Object.freeze({
+        const context = Object.freeze({
             attempt: Object.freeze({ ...a }),
-            preview: Object.freeze({
-                command: a.command,
-                requestLabel: `${actionId} / ${a.attemptId}`,
-                workingDirectory: cwd,
-                documents: Object.freeze(
-                    documents.map((d) =>
-                        Object.freeze({
-                            label: `${d.title} (${d.documentId}@${d.revision})`,
-                            body: d.body,
-                        }),
-                    ),
-                ),
-            }),
+            preview,
         });
+        this.issued.add(context);
+        return context;
     }
     runner(ui: UiPort): RunnerPort<PreparedExecution, PreparedExecution> {
         const started = new Set<string>();
         const finished = new Map<string, ExecutionFacts>();
-        const requireAttempt = (context: PreparedExecution) => context.attempt;
+        const requireAttempt = (context: PreparedExecution) => {
+            if (
+                !this.issued.has(context) ||
+                context.preview.command !== context.attempt.command
+            )
+                throw new Error('正式な確認済みcontextではありません');
+            return context.attempt;
+        };
         return {
             ...ui,
+            allowed: async (c) =>
+                this.issued.has(c) &&
+                this.writable &&
+                c.preview.command === c.attempt.command &&
+                (await ui.allowed(c)),
+            // prepare前の全文確認を通過したcontextだけを発行する。再確認で予約を残さない。
+            confirm: async () => true,
             key: (c) => c.attempt.attemptId,
             preview: (c) => c.preview,
             claimedKey: (c) => c.attempt.attemptId,
@@ -351,6 +414,7 @@ export class RecordConnection {
     }
     disclosure(
         attemptId: string,
+        canChange: () => Promise<boolean> = async () => false,
     ): ResultAccessAdapter<{ attemptId: string; revision: number }> {
         return {
             read: async () => {
@@ -358,8 +422,14 @@ export class RecordConnection {
                     d = value.state.disclosure;
                 return {
                     context: { attemptId, revision: d.revision },
-                    canChangeDisclosure: true,
-                    userDisplay: '本人の認可を通した正式read',
+                    canChangeDisclosure:
+                        this.writable &&
+                        'command' in value.attempt &&
+                        (await canChange()),
+                    userDisplay:
+                        'command' in value.attempt
+                            ? '認可された本文readあり（本人の確認は別）'
+                            : 'メタデータのみ。本人の本文readは未確認',
                     databaseStorage:
                         value.state.integrity === 'complete'
                             ? '全文保存済み'
@@ -375,6 +445,13 @@ export class RecordConnection {
             changeDisclosure: async (context, allow) => {
                 if (context.attemptId !== attemptId)
                     throw new Error('開示設定の実行IDが一致しません');
+                const current = await this.execution(attemptId);
+                if (
+                    !this.writable ||
+                    !('command' in current.attempt) ||
+                    !(await canChange())
+                )
+                    throw new Error('開示変更の本人権限を確認できません');
                 const ack = await this.send({
                     type: 'execution.disclosure',
                     payload: {

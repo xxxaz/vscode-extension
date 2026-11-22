@@ -56,6 +56,10 @@ export async function copyBoardCommand(
     message: Extract<BoardMessage, { type: 'copy-command' }>,
     clipboard: { writeText(value: string): PromiseLike<void> },
 ): Promise<void> {
+    if (snapshot.userActions?.status === 'unavailable')
+        throw new Error(
+            '一覧を取得できません。最新のコマンドを確認してからコピーしてください',
+        );
     const command = snapshot.sections
         .flatMap((section) => section.cards)
         .find(

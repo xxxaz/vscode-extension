@@ -15,6 +15,25 @@ const limits: CaptureLimits = {
     maxPieces: 32,
     ackTimeoutMs: 50,
 };
+test('読戻しが未完了でも照会を積み上げず、後続のDB保存byteは保持する', async () => {
+    let reads = 0;
+    const f = fixture(
+        {
+            readSaved: () => {
+                reads++;
+                return new Promise(() => {});
+            },
+        },
+        { pieceBytes: 4, ackTimeoutMs: 5 },
+    );
+    await f.capture.consume('stdout', bytes('abcdefghijkl'));
+    const result = f.capture.finish();
+    assert.equal(reads, 1);
+    assert.equal(result.savedBytes, 12);
+    assert.equal(result.status, 'complete');
+    assert.equal(result.displayUnavailable, true);
+    assert.equal(f.shown.length, 0);
+});
 function fixture(
     extra: Partial<CapturePort> = {},
     overrides: Partial<CaptureLimits> = {},
