@@ -1,4 +1,63 @@
+import { RECORD_LIMITS } from './contracts/records.ts';
+import type { ObservedOutput } from './executionCapture.ts';
 import type { ExecutionPreview } from './executionRunner.ts';
+
+// showSavedには正式DBのack後readを照合した出力だけを渡す。
+export function mountExecutionOutput(host: HTMLElement) {
+    const doc = host.ownerDocument;
+    const root = doc.createElement('section');
+    const status = doc.createElement('p');
+    status.setAttribute('role', 'status');
+    const output = doc.createElement('pre');
+    output.className = 'execution-output field-value';
+    output.tabIndex = 0;
+    output.style.maxHeight = '28rem';
+    output.style.overflow = 'auto';
+    root.append(status, output);
+    host.append(root);
+    let bytes = 0,
+        lastSequence = 0,
+        disposed = false;
+    status.textContent = 'DBに保存された出力を待っています';
+    return {
+        showSaved(part: Readonly<ObservedOutput>) {
+            if (disposed) return;
+            if (
+                !Number.isSafeInteger(part.sequence) ||
+                part.sequence <= lastSequence ||
+                part.sequence > RECORD_LIMITS.chunks ||
+                part.byteLength < 0 ||
+                bytes + part.byteLength > RECORD_LIMITS.attemptBytes
+            ) {
+                status.textContent =
+                    '出力の表示上限または順序を確認できません。全文表示として扱えません';
+                return;
+            }
+            const pinned =
+                output.scrollHeight - output.clientHeight - output.scrollTop <=
+                24;
+            const previous = output.scrollTop;
+            if (part.sequence !== lastSequence + 1)
+                status.textContent =
+                    '表示に欠落があります。保存済み出力を再取得してください';
+            const line = doc.createElement('span');
+            line.dataset.sequence = String(part.sequence);
+            line.dataset.stream = part.stream;
+            line.textContent = part.text;
+            output.append(line);
+            bytes += part.byteLength;
+            lastSequence = part.sequence;
+            output.scrollTop = pinned ? output.scrollHeight : previous;
+        },
+        status(message: string) {
+            if (!disposed) status.textContent = message;
+        },
+        dispose() {
+            disposed = true;
+            root.remove();
+        },
+    };
+}
 
 // 受付型ではなく、正本のreadをadapterで変換した画面用の値。
 export interface ResultAccessView<Context> {

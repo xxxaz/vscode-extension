@@ -2,7 +2,7 @@
     "name": "task-supervisor-dashboard",
     "displayName": "Task Supervisor",
     "description": "監督台帳の依頼・タスク・通知を一覧表示し、行から完了・キック済み・回答を記録する",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "publisher": "xxxaz",
     "license": "MIT",
     "repository": {
@@ -111,7 +111,9 @@
         "package": "npm run build && vsce package --out dist/task-supervisor-dashboard.vsix",
         "preview": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/preview.ts",
         "test:board-parity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/board-parity.ts",
-        "test:runtime-view": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/runtime-view-integration.ts"
+        "test:runtime-view": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/runtime-view-integration.ts",
+        "sync:record-types": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/sync-record-types.ts",
+        "test:record-connection": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/record-connection-integration.ts"
     },
     "devDependencies": {
         "@types/jsdom": "^21.1.7",

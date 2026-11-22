@@ -10,6 +10,7 @@ import { createGateway } from './backend.ts';
 import type { Operation } from './boardClient.ts';
 import { BoardFeed } from './boardFeed.ts';
 import {
+    copyBoardCommand,
     findBoardLink,
     hasBoardOperation,
     isOutsideRelative,
@@ -412,6 +413,20 @@ export function activate(context: vscode.ExtensionContext): void {
                         entry.feed.request();
                     } else if (message.type === 'refresh') {
                         await entry.feed.refresh();
+                    } else if (message.type === 'copy-command') {
+                        assertCurrentFolder(folder);
+                        if (!entry.feed.current)
+                            throw new Error('一覧の読取りを待ってください');
+                        await copyBoardCommand(
+                            entry.feed.current,
+                            message,
+                            vscode.env.clipboard,
+                        );
+                        status(
+                            `${message.id} のコマンドをコピーしました`,
+                            false,
+                            'success',
+                        );
                     } else if (message.type === 'operation') {
                         if (
                             !entry.feed.current ||

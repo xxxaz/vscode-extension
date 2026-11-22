@@ -20,6 +20,10 @@ export interface CaptureSummary {
     savedBytes: number;
     discardedBytes: number;
     uncertainBytes: number;
+    discardedStdoutBytes: number;
+    discardedStderrBytes: number;
+    uncertainStdoutBytes: number;
+    uncertainStderrBytes: number;
     lastSubmittedSequence: number;
     lastAckSequence: number;
     status: 'complete' | 'incomplete' | 'unknown';
@@ -32,6 +36,9 @@ export interface CapturePort {
     showSaved(part: Readonly<ObservedOutput>): void;
     warning(message: string): void;
 }
+
+// 正式受付が未保存を確定した場合。応答不明とは区別する。
+export class OutputNotStored extends Error {}
 
 export function validateCaptureLimits(limits: CaptureLimits): void {
     for (const value of Object.values(limits))
@@ -114,6 +121,10 @@ export class ExecutionCapture {
         savedBytes: 0,
         discardedBytes: 0,
         uncertainBytes: 0,
+        discardedStdoutBytes: 0,
+        discardedStderrBytes: 0,
+        uncertainStdoutBytes: 0,
+        uncertainStderrBytes: 0,
         lastSubmittedSequence: 0,
         lastAckSequence: 0,
         decodingIncomplete: false,
@@ -130,6 +141,26 @@ export class ExecutionCapture {
         this.draining = true;
         this.port.warning(message);
     }
+    lost(stream: ObservedOutput['stream'], bytes: number) {
+        if (
+            !Number.isSafeInteger(bytes) ||
+            bytes < 0 ||
+            this.closed ||
+            this.busy
+        )
+            throw new Error('欠落byteの観測が不正です');
+        this.facts.observedBytes += bytes;
+        this.discard(stream, bytes);
+        this.stopSaving('捕捉待ちの上限を超え、出力を全文保存できていません');
+    }
+    private discard(stream: ObservedOutput['stream'], bytes: number) {
+        this.facts.discardedBytes += bytes;
+        this.facts[
+            stream === 'stdout'
+                ? 'discardedStdoutBytes'
+                : 'discardedStderrBytes'
+        ] += bytes;
+    }
     async consume(
         stream: ObservedOutput['stream'],
         bytes: Uint8Array,
@@ -138,7 +169,7 @@ export class ExecutionCapture {
             throw new Error('出力は観測順に1片ずつ渡してください');
         this.facts.observedBytes += bytes.byteLength;
         if (this.draining || bytes.byteLength > this.limits.inputBytes) {
-            this.facts.discardedBytes += bytes.byteLength;
+            this.discard(stream, bytes.byteLength);
             if (!this.draining)
                 this.stopSaving('捕捉上限を超え、出力を全文保存できていません');
             return;
@@ -164,7 +195,7 @@ export class ExecutionCapture {
             }).decode(combined.subarray(0, combined.length - tail));
         } catch {
             this.pending[stream] = new Uint8Array();
-            this.facts.discardedBytes += combined.length;
+            this.discard(stream, combined.length);
             this.facts.decodingIncomplete = true;
             this.stopSaving(
                 '不正なUTF-8を捕捉し、原文を全文保存できていません',
@@ -180,7 +211,7 @@ export class ExecutionCapture {
                 this.submittedBytes + encoded.length >
                     this.limits.executionBytes
             ) {
-                this.facts.discardedBytes += encoded.length;
+                this.discard(stream, encoded.length);
                 if (!this.draining)
                     this.stopSaving(
                         '実行の保存上限に達し、出力を全文保存できていません',
@@ -202,8 +233,17 @@ export class ExecutionCapture {
                 );
                 if (ack !== part.sequence)
                     throw new Error('保存位置が一致しません');
-            } catch {
-                this.facts.uncertainBytes += part.byteLength;
+            } catch (error) {
+                if (error instanceof OutputNotStored)
+                    this.discard(stream, part.byteLength);
+                else {
+                    this.facts.uncertainBytes += part.byteLength;
+                    this.facts[
+                        stream === 'stdout'
+                            ? 'uncertainStdoutBytes'
+                            : 'uncertainStderrBytes'
+                    ] += part.byteLength;
+                }
                 this.stopSaving(
                     'DBへの保存結果が不明です。以後の出力は全文保存できません',
                 );
@@ -239,7 +279,7 @@ export class ExecutionCapture {
             this.sourceComplete = sourceComplete;
             for (const stream of ['stdout', 'stderr'] as const) {
                 const remaining = this.pending[stream].length;
-                this.facts.discardedBytes += remaining;
+                this.discard(stream, remaining);
                 if (remaining) this.facts.decodingIncomplete = true;
                 this.pending[stream] = new Uint8Array();
             }

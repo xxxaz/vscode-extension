@@ -17,8 +17,9 @@ export interface ExecutionPreview {
     documents: readonly { label: string; body: string }[];
 }
 export type ProcessObservation =
-    | { kind: 'spawned' }
+    | { kind: 'spawned'; processIdentity?: string; startedAt?: number }
     | { kind: 'output'; stream: ObservedOutput['stream']; bytes: Uint8Array }
+    | { kind: 'lost-output'; stream: ObservedOutput['stream']; bytes: number }
     | { kind: 'closed'; code: number | null; signal: string | null };
 export interface ProcessSource {
     observations: AsyncIterable<ProcessObservation>;
@@ -51,7 +52,10 @@ export interface RunnerPort<Context, Claim> {
         stdin: string;
         cwd: string;
     }): ProcessSource;
-    started(claim: Claim): Promise<void>;
+    started(
+        claim: Claim,
+        observation: Extract<ProcessObservation, { kind: 'spawned' }>,
+    ): Promise<void>;
     output(claim: Claim): CapturePort;
     finished(claim: Claim, facts: Readonly<ExecutionFacts>): Promise<void>;
     readFinished(claim: Claim): Promise<ExecutionFacts>;
@@ -173,7 +177,7 @@ export class ExecutionRunner<Context, Claim> {
                         spawnObserved = true;
                         try {
                             await withDeadline(
-                                this.port.started(claim),
+                                this.port.started(claim, observation),
                                 this.limits.ackTimeoutMs,
                             );
                             startAcknowledged = true;
@@ -186,6 +190,8 @@ export class ExecutionRunner<Context, Claim> {
                                 '起動事実の保存が不明です。出力を全文保存できていません',
                             );
                         }
+                    } else if (observation.kind === 'lost-output') {
+                        capture.lost(observation.stream, observation.bytes);
                     } else if (observation.kind === 'output') {
                         if (!spawnObserved)
                             throw new Error('起動観測前の出力です');

@@ -1,11 +1,11 @@
 # Task Supervisor
 
-監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。0.3.0では常駐部と同じ共通の依頼一覧を使い、表示版・取得状態を明示します。Markdownへは書き戻しません。
+監督台帳を一覧で見ながら、依頼の完了・キック済み・判断の回答を記録します。0.2.0では一覧を主画面にしました。0.2.1では中央のエディタータブを主表示とし、ウィンドウ再起動後もタブを復元します。0.4.0では常駐部と同じ共通の依頼一覧を使い、表示版・取得状態を明示します。Markdownへは書き戻しません。
 更新日: 2026-11-20。
 
 ## 開発候補: 本人実行のportとfixture
 
-資料・コマンド・実行結果のDB保存はU1898で採用されました。この候補は、既存の0.3.0共通read候補へ未配線のprocess/表示portを追加した準備段階です。正式受付・DB・実Node process・DevContainerの所在確認adapterは未接続です。製品の実行ボタンを追加せず、この候補のVSIX配布・実コマンド実行も行いません。既存の0.2.1/0.2.2/0.2.3/0.3.0と親PRは保全します。
+資料・コマンド・実行結果のDB保存はU1898で採用されました。この候補は、既存の0.4.0共通read候補へ未配線のprocess/表示portを追加した準備段階です。正式受付・DB・実Node process・DevContainerの所在確認adapterは未接続です。製品の実行ボタンを追加せず、この候補のVSIX配布・実コマンド実行も行いません。既存の0.2.1/0.2.2/0.2.3/0.4.0と親PRは保全します。
 
 `executionRunner.ts`は正式なcontext/claimをopaque型としてadapterへ委譲します。私有portのpreviewは固定版の資料本文とコマンド全文です。明示確認・所在の再確認・永続起動ラッチ・一度限りのclaimを通し、同じ本文をBashのstdinへ渡す起動要求を人工processへ接続します。実adapterはまだなく、端末のsendTextやagent daemonの本人実行経路は追加しません。起動ファイルや継承された関数を本文へ混ぜないBashオプションも固定します。
 
@@ -64,6 +64,27 @@ spawnを観測した後に開始保存を待ちます。claimの結果不明・�
 
 正規release後に旧正本へ戻る受付選択は、この候補では未対応です。既知の切替記録を拡張が独自に解除せず、`preparing` として拒否します。正式な受付契約との接続を確認してから対応します。
 
+## 実行記録への接続候補（未公開）
+
+この候補は正式checkpoint `1cd5c8787d5434bb0c167d686ee7462f9d8b9077` の型と保存処理へ接続する準備版です。既存のコピー機能も含めます。本人認可の公開transport、runner所在の登録、機密原文の受付条件は未接続です。拡張の実行ボタンは有効にせず、実台帳・実DB・daemon・LLMの切替を行いません。
+
+`RecordConnection` は正式型を使い、固定資料・実行原票を読みます。prepare、claim、実processのspawn観測、started、共通seq出力、finished、開示変更を正式操作へ変換します。appliedだけでは出力保存成功とせず、storedとseqのack、正式readの本文ハッシュを照合します。task版の競合・応答不明の後に現在版へ差し替えません。実行権取得後の再起動は行いません。終了値0も依頼の完了には変換しません。
+
+Bashへ確認した本文の全文をstdinで送ります。stdoutとstderrの待ち行列は合計128KiB、1送信片16KiB、1実行8MiB、片数4096までです。DB応答期限は5秒です。期限・容量超過では出力を排出し、stream別の欠落と不明を記録します。子を無断でkillしません。保存済み出力の表示はテキストとして追加し、読みかけのスクロールを保ちます。本人表示・DB保存・AI開示・needsOkを別々に扱います。
+
+公開transportは、payloadのsourceやUIの自己申告とは独立した認可、正式capabilities、DevContainer所在、永続的な起動ラッチを供給する必要があります。現在の人工fixtureを本番の認可として使いません。ラッパースクリプトの本文展開と依頼に紐づく固定資料参照も正式接続の前提です。任意の手元資料を、依頼に添付された資料として扱いません。
+
+質問の送受信APIと推奨回答原文の正式フィールドは、このcheckpointにはありません。質問の送信・推奨原文の自動選択が完成したとは扱いません。既存の自由回答は正式なanswer APIを使い、ログと完了印の組合せへ代替しません。
+
+正式型と定数は手書きで複製せず、固定commitから型だけを再現生成します。parser・分類・SQLは拡張へ複製しません。次の検査は正式リポジトリの隔離WTを明示して実行します。引数なし・checkpoint不一致は失敗です。
+
+```sh
+npm run sync:record-types -- <正式リポジトリのWT> --check
+npm run test:record-connection -- <正式リポジトリのWT>
+```
+
+結合検査は一時ディレクトリの形式3SQLiteと非機密のprintfだけを使用します。人工の本人callerを使った隔離成功と、実DevContainerでの本人実行・運用受入は別です。
+
 ## 必要な環境
 
 信頼したローカルワークスペースを使います。拡張はワークスペース側で動き、DevContainer接続中はDevContainer内でCLIを呼びます。Dockerを使う実行経路はありません。
@@ -96,12 +117,12 @@ npm run test:runtime-view -- <公開候補のtask-supervisorディレクトリ>
 手動導入では、VS Codeを動かす環境の端末で次を実行します。コンテナの構成へ入れる前にもVSIXから試せます。
 
 ```sh
-code --install-extension <task-supervisor-dashboard-0.3.0.vsixのパス> --force
+code --install-extension <task-supervisor-dashboard-0.4.0.vsixのパス> --force
 ```
 
 導入後はコマンドパレットで **Developer: Reload Window（開発者: ウィンドウの再読み込み）** を実行し、**Task Supervisor: 監督のダッシュボードを開く** を選びます。手元のVS Codeへ入れる場合は、NodeとCLIのマシン設定をローカルのパスへ合わせてください。表示だけのプレビュー検証と、VS Codeでの実CLI操作の受入は区別します。
 
-既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.3.0` タグでRelease workflowが `task-supervisor-dashboard-0.3.0.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
+既存CI matrixが検査とVSIX生成を行い、`task-supervisor-dashboard-v0.4.0` タグでRelease workflowが `task-supervisor-dashboard-0.4.0.vsix` を配布します。push・公開・標準のコンテナ再作成は開発者が行います。
 
 ## 実装の配置
 
@@ -120,6 +141,9 @@ code --install-extension <task-supervisor-dashboard-0.3.0.vsixのパス> --force
 | `src/boardClient.ts` / `gateway.ts`                                   | 既存台帳CLIと共通の操作ポート                                |
 | `src/backend.ts` / `runtimeGateway.ts` / `runtimeFiles.ts`            | 正本選択・契約v1操作・結果の照会                             |
 | `src/executionCapture.ts` / `executionRunner.ts` / `executionView.ts` | 未配線の本人実行process/表示portと人工fixture用の境界        |
+| `src/recordConnection.ts`                                             | 正式型付き操作と保存ack後read、開示設定のadapter             |
+| `src/nodeExecutionProcess.ts`                                         | 所在確認後の実Bash stdinと有界stream観測                     |
+| `src/contracts/records.ts` / `tools/sync-record-types.ts`             | 正式checkpointの型・定数だけを再現生成                       |
 | `test/`                                                               | 振舞い・差分更新・読取り・実CLI補助・画面プレビュー          |
 
 本文はテキストノードとして表示し、Webviewから実行ファイル・任意のCLI引数・任意URLを受け付けません。リンクも現在の表示にあるIDから解決します。CSPはnonce付きの固定スクリプトとCSSに限定します。

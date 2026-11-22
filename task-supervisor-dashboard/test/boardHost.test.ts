@@ -13,6 +13,7 @@ import {
 } from '../src/boardClient.ts';
 import { BoardFeed } from '../src/boardFeed.ts';
 import {
+    copyBoardCommand,
     findBoardLink,
     hasBoardOperation,
     parseBoardMessage,
@@ -28,6 +29,64 @@ import {
     waitingForDecision,
     waitingForExecution,
 } from './viewFixture.ts';
+
+test('コピーは表示モデルのコマンド原文を使い、古い版と未知IDは拒否する', async () => {
+    const board = snapshot();
+    const command =
+        "printf '%s\\n' '$HOME'\nnode ./cli.ts --literal '`whoami`'";
+    board.sections.push({
+        id: 'execution',
+        title: '実行',
+        defaultOpen: true,
+        cards: [
+            {
+                id: 'U1',
+                title: '依頼',
+                summary: '',
+                fields: [],
+                links: [],
+                operations: [],
+                command: { id: 'U1', revision: 'a'.repeat(64), text: command },
+            },
+        ],
+    });
+    const copied: string[] = [];
+    const clipboard = {
+        writeText: async (value: string) => {
+            copied.push(value);
+        },
+    };
+    const message = {
+        type: 'copy-command' as const,
+        id: 'U1',
+        revision: 'a'.repeat(64),
+    };
+    assert.deepEqual(parseBoardMessage(message), message);
+    await copyBoardCommand(board, message, clipboard);
+    assert.deepEqual(copied, [command]);
+    for (const changed of [
+        { ...message, id: 'U2' },
+        { ...message, revision: 'b'.repeat(64) },
+    ])
+        await assert.rejects(
+            copyBoardCommand(board, changed, clipboard),
+            /コマンドが更新/,
+        );
+    assert.deepEqual(copied, [command]);
+    await assert.rejects(
+        copyBoardCommand(board, message, {
+            writeText: async () => {
+                throw new Error('クリップボードに書けません');
+            },
+        }),
+        /クリップボードに書けません/,
+    );
+    assert.equal(parseBoardMessage({ ...message, id: '../U1' }), undefined);
+    assert.equal(
+        parseBoardMessage({ ...message, revision: 'unknown' }),
+        undefined,
+    );
+});
 
 function snapshot(updatedAt = 1): BoardSnapshot {
     return {

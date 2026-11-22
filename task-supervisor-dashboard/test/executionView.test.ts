@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import {
+    mountExecutionOutput,
     mountExecutionPreview,
     mountResultAccess,
     type ResultAccessView,
@@ -12,6 +13,58 @@ const tick = async () => {
     await Promise.resolve();
     await Promise.resolve();
 };
+test('保存済み出力の追加は原文・既存DOM・読みかけのスクロールを保持する', () => {
+    const dom = new JSDOM('<main></main>');
+    using _cleanup = { [Symbol.dispose]: () => dom.window.close() };
+    const host = dom.window.document.querySelector('main');
+    assert.ok(host);
+    const view = mountExecutionOutput(host);
+    const output = host.querySelector('pre');
+    assert.ok(output);
+    Object.defineProperties(output, {
+        scrollHeight: { value: 2000 },
+        clientHeight: { value: 100 },
+    });
+    output.scrollTop = 120;
+    view.showSaved({
+        sequence: 1,
+        stream: 'stdout',
+        text: '<script>原文</script>\n',
+        byteLength: 26,
+        sha256: 'fixture',
+    });
+    const first = output.firstChild;
+    assert.equal(host.querySelector('script'), null);
+    assert.equal(output.scrollTop, 120);
+    view.showSaved({
+        sequence: 2,
+        stream: 'stderr',
+        text: '  stderr\n',
+        byteLength: 9,
+        sha256: 'fixture',
+    });
+    assert.equal(output.firstChild, first);
+    assert.equal(output.scrollTop, 120);
+    output.scrollTop = 1900;
+    view.showSaved({
+        sequence: 3,
+        stream: 'stdout',
+        text: '続き',
+        byteLength: 6,
+        sha256: 'fixture',
+    });
+    assert.equal(output.scrollTop, 2000);
+    view.showSaved({
+        sequence: 5,
+        stream: 'stdout',
+        text: '欠落後',
+        byteLength: 9,
+        sha256: 'fixture',
+    });
+    assert.match(host.textContent ?? '', /表示に欠落/);
+    view.dispose();
+    assert.equal(host.children.length, 0);
+});
 test('固定版の資料・コマンド全文を文字で表示し、未接続と未確認では確定できない', () => {
     const dom = new JSDOM('<main></main>');
     using _cleanup = { [Symbol.dispose]: () => dom.window.close() };

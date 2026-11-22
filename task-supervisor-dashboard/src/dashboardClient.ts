@@ -413,6 +413,23 @@ export function mountBoard(
             ).map((button) => [button.dataset.operation, button]),
         );
         const buttons: HTMLButtonElement[] = [];
+        if (card.command) {
+            const command = card.command;
+            const button =
+                previousButtons.get('copy-command') ??
+                make('button', 'copy-command refresh');
+            button.type = 'button';
+            button.dataset.operation = 'copy-command';
+            button.textContent = 'コマンドをコピー';
+            clickActions.set(button, () =>
+                post({
+                    type: 'copy-command',
+                    id: command.id,
+                    revision: command.revision,
+                }),
+            );
+            buttons.push(button);
+        }
         for (const operation of card.operations) {
             if (!operations.has(operation.operation)) continue;
             const button =

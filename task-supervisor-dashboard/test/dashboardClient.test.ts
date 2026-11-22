@@ -1074,3 +1074,47 @@ test('詳細の各項目をspan・code・リンクごとに別行で表示し、
         dom.window.close();
     }
 });
+
+test('コピーはIDと表示版だけを送り、更新後も同じボタンと開閉を保持する', () => {
+    const app = setup();
+    try {
+        const initial = card();
+        initial.command = {
+            id: 'U1',
+            revision: 'a'.repeat(64),
+            text: 'echo 原文',
+        };
+        app.update(snapshot([initial]));
+        app.row('U1').open = true;
+        const button =
+            app.host.querySelector<HTMLButtonElement>('.copy-command')!;
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'a'.repeat(64),
+        });
+        assert.notEqual(app.host.getAttribute('aria-busy'), 'true');
+        const changed = {
+            ...initial,
+            command: {
+                ...initial.command,
+                revision: 'b'.repeat(64),
+                text: 'echo 更新',
+            },
+        };
+        app.update(snapshot([changed]));
+        assert.equal(app.host.querySelector('.copy-command'), button);
+        assert.equal(app.row('U1').open, true);
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'b'.repeat(64),
+        });
+        app.update(snapshot([card()]));
+        assert.equal(app.host.querySelector('.copy-command'), null);
+    } finally {
+        app.close();
+    }
+});

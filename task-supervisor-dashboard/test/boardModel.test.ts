@@ -973,3 +973,53 @@ test('多数タスクのイベントが交互に並んでも補足と最新記�
     );
     assert.equal(JSON.stringify(raw), before);
 });
+
+test('コマンドの原文コピーは保留中も使え、空コマンドには付けない', () => {
+    const raw = "  printf '%s\\n' '$HOME'\nnode ./cli.ts  ";
+    const source = request('U1', { command: raw, holdReason: '前提確認中' });
+    const actions = [
+        source,
+        request('U2', { command: '' }),
+        request('U3', { command: ' \n ' }),
+    ];
+    const board = projectBoard(
+        input({
+            userActions: ready(
+                actions.map((action) =>
+                    row(action, {
+                        kind: 'execution',
+                        lifecycle: 'unexecuted',
+                        operations: noOperations,
+                        availability:
+                            action.id === 'U1'
+                                ? {
+                                      ...available,
+                                      actionable: false,
+                                      held: true,
+                                      holdReason: '前提確認中',
+                                  }
+                                : { ...available, actionable: false },
+                    }),
+                ),
+            ),
+            registry: {
+                version: 1,
+                tasks: [task()],
+                actions,
+            },
+        }),
+    );
+    assert.deepEqual(cards(board, 'held')[0].command, {
+        id: 'U1',
+        revision: revision(source),
+        text: raw,
+    });
+    assert.equal(
+        cards(board, 'execution').find((c) => c.id === 'U2')?.command,
+        undefined,
+    );
+    assert.equal(
+        cards(board, 'execution').find((c) => c.id === 'U3')?.command,
+        undefined,
+    );
+});
