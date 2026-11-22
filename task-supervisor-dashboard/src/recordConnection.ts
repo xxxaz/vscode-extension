@@ -13,6 +13,7 @@ import {
 } from './contracts/records.ts';
 import {
     type CaptureLimits,
+    KnownNotApplied,
     type ObservedOutput,
     OutputNotStored,
     withDeadline,
@@ -54,7 +55,7 @@ export interface PrepareApproval {
     keepReference(command: Readonly<RecordCommand>): Promise<void>;
 }
 // 正式な非適用拒否を確認したtransportだけが使用する。通信不明と混同しない。
-export class KnownRecordRejection extends Error {
+export class KnownRecordRejection extends KnownNotApplied {
     readonly taskVersionConflict: boolean;
     constructor(message: string, taskVersionConflict = false) {
         super(message);
@@ -298,6 +299,10 @@ export class RecordConnection {
     runner(ui: UiPort): RunnerPort<PreparedExecution, PreparedExecution> {
         const started = new Set<string>();
         const finished = new Map<string, ExecutionFacts>();
+        const submittedOutcomes = new Map<
+            string,
+            Extract<RecordOperation, { type: 'execution.finished' }>['payload']
+        >();
         const requireAttempt = (context: PreparedExecution) => {
             if (
                 !this.issued.has(context) ||
@@ -434,69 +439,60 @@ export class RecordConnection {
                 const t = facts.termination,
                     o = facts.output;
                 const known = started.has(a.attemptId) && t.kind !== 'unknown';
-                await this.send({
-                    type: 'execution.finished',
-                    payload: {
-                        attemptId: a.attemptId,
-                        outcome: known
-                            ? t.kind === 'exit'
-                                ? 'exited'
-                                : 'signaled'
-                            : 'unknown',
-                        exitCode: known && t.kind === 'exit' ? t.code : null,
-                        signal: known && t.kind === 'signal' ? t.signal : null,
-                        lastSeq: o.lastSubmittedSequence,
-                        complete: o.status === 'complete',
-                        missingStdoutBytes:
-                            known && o.uncertainStdoutBytes === 0
-                                ? o.discardedStdoutBytes
-                                : null,
-                        missingStderrBytes:
-                            known && o.uncertainStderrBytes === 0
-                                ? o.discardedStderrBytes
-                                : null,
-                    },
-                });
+                const payload: Extract<
+                    RecordOperation,
+                    { type: 'execution.finished' }
+                >['payload'] = {
+                    attemptId: a.attemptId,
+                    outcome: known
+                        ? t.kind === 'exit'
+                            ? 'exited'
+                            : 'signaled'
+                        : 'unknown',
+                    exitCode: known && t.kind === 'exit' ? t.code : null,
+                    signal: known && t.kind === 'signal' ? t.signal : null,
+                    lastSeq: o.lastSubmittedSequence,
+                    complete: o.status === 'complete',
+                    missingStdoutBytes:
+                        t.kind !== 'unknown' && o.uncertainStdoutBytes === 0
+                            ? o.discardedStdoutBytes
+                            : null,
+                    missingStderrBytes:
+                        t.kind !== 'unknown' && o.uncertainStderrBytes === 0
+                            ? o.discardedStderrBytes
+                            : null,
+                };
+                submittedOutcomes.set(
+                    a.attemptId,
+                    Object.freeze({ ...payload }),
+                );
+                await this.send({ type: 'execution.finished', payload });
             },
             readFinished: async (context) => {
                 const a = requireAttempt(context),
-                    f = finished.get(a.attemptId);
-                if (!f) throw new Error('今回の終了観測がありません');
+                    f = finished.get(a.attemptId),
+                    p = submittedOutcomes.get(a.attemptId);
+                if (!f || !p)
+                    throw new Error('今回の終了観測と提出値がありません');
                 const saved = await this.execution(a.attemptId);
                 matchAttempt(saved, a);
                 const s = saved.state,
-                    t = f.termination,
                     o = f.output;
-                const expectedIntegrity =
-                    o.status === 'complete'
-                        ? 'complete'
-                        : o.status === 'incomplete'
-                          ? 'incomplete'
-                          : null;
                 if (
                     !s.result ||
-                    s.result.outcome !==
-                        (t.kind === 'exit'
-                            ? 'exited'
-                            : t.kind === 'signal'
-                              ? 'signaled'
-                              : 'unknown') ||
-                    s.result.exitCode !== (t.kind === 'exit' ? t.code : null) ||
-                    s.result.signal !==
-                        (t.kind === 'signal' ? t.signal : null) ||
-                    s.observedLastSeq !== o.lastSubmittedSequence ||
+                    s.result.outcome !== p.outcome ||
+                    s.result.exitCode !== p.exitCode ||
+                    s.result.signal !== p.signal ||
+                    s.observedLastSeq !== p.lastSeq ||
                     s.lastSeq !== o.lastAckSequence ||
                     s.capturedBytes !== o.savedBytes ||
-                    (expectedIntegrity !== null &&
-                        s.integrity !== expectedIntegrity) ||
-                    s.missingStdoutBytes !==
-                        (t.kind !== 'unknown' && o.uncertainStdoutBytes === 0
-                            ? o.discardedStdoutBytes
-                            : null) ||
-                    s.missingStderrBytes !==
-                        (t.kind !== 'unknown' && o.uncertainStderrBytes === 0
-                            ? o.discardedStderrBytes
-                            : null)
+                    ((p.outcome === 'unknown' || !p.complete) &&
+                        s.integrity === 'complete') ||
+                    (p.outcome !== 'unknown' &&
+                        p.complete &&
+                        s.integrity !== 'complete') ||
+                    s.missingStdoutBytes !== p.missingStdoutBytes ||
+                    s.missingStderrBytes !== p.missingStderrBytes
                 )
                     throw new Error('終了事実と正式DBの保存結果が一致しません');
                 return structuredClone(f);
@@ -511,15 +507,12 @@ export class RecordConnection {
             read: async () => {
                 const value = await this.execution(attemptId),
                     d = value.state.disclosure;
+                const permitted =
+                    'command' in value.attempt &&
+                    (await withDeadline(canChange(), this.responseTimeoutMs));
                 return {
                     context: { attemptId, revision: d.revision },
-                    canChangeDisclosure:
-                        this.writable &&
-                        'command' in value.attempt &&
-                        (await withDeadline(
-                            canChange(),
-                            this.responseTimeoutMs,
-                        )),
+                    canChangeDisclosure: permitted && this.writable,
                     userDisplay:
                         'command' in value.attempt
                             ? '認可された本文readあり（本人の確認は別）'

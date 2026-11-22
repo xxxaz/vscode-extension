@@ -4,6 +4,7 @@ import {
     type CaptureLimits,
     type CapturePort,
     ExecutionCapture,
+    KnownNotApplied,
     type ObservedOutput,
 } from '../src/executionCapture.ts';
 
@@ -15,6 +16,23 @@ const limits: CaptureLimits = {
     maxPieces: 32,
     ackTimeoutMs: 50,
 };
+test('確定非適用はstreamの欠落として数え、通信不明の接続停止へ分類しない', async () => {
+    let suspended = 0;
+    const f = fixture({
+        append: async () => {
+            throw new KnownNotApplied('非適用確定');
+        },
+        suspend: () => {
+            suspended++;
+        },
+    });
+    await f.capture.consume('stderr', bytes('abc'));
+    const end = f.capture.finish();
+    assert.equal(end.discardedStderrBytes, 3);
+    assert.equal(end.uncertainBytes, 0);
+    assert.equal(end.status, 'incomplete');
+    assert.equal(suspended, 0);
+});
 test('読戻しが未完了でも照会を積み上げず、後続のDB保存byteは保持する', async () => {
     let reads = 0;
     const f = fixture(

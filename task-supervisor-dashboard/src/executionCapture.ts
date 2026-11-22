@@ -39,7 +39,8 @@ export interface CapturePort {
 }
 
 // 正式受付が未保存を確定した場合。応答不明とは区別する。
-export class OutputNotStored extends Error {}
+export class KnownNotApplied extends Error {}
+export class OutputNotStored extends KnownNotApplied {}
 
 export function validateCaptureLimits(limits: CaptureLimits): void {
     for (const value of Object.values(limits))
@@ -235,7 +236,7 @@ export class ExecutionCapture {
                 if (ack !== part.sequence)
                     throw new Error('保存位置が一致しません');
             } catch (error) {
-                if (error instanceof OutputNotStored)
+                if (error instanceof KnownNotApplied)
                     this.discard(stream, part.byteLength);
                 else {
                     this.port.suspend?.();
@@ -247,7 +248,9 @@ export class ExecutionCapture {
                     ] += part.byteLength;
                 }
                 this.stopSaving(
-                    'DBへの保存結果が不明です。以後の出力は全文保存できません',
+                    error instanceof KnownNotApplied
+                        ? 'DBが未保存を確定しました。以後の出力は全文保存できません'
+                        : 'DBへの保存結果が不明です。以後の出力は全文保存できません',
                 );
                 continue;
             }

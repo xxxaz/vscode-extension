@@ -91,8 +91,10 @@ registry.actions.push({
 });
 registry.actions.push({ ...registry.actions[0], id: 'U2', needsOk: false });
 registry.actions.push({ ...registry.actions[0], id: 'U3' });
+registry.actions.push({ ...registry.actions[0], id: 'U4' });
+registry.actions.push({ ...registry.actions[0], id: 'U5' });
 registry.nextTaskNo = 2;
-registry.nextActionNo = 4;
+registry.nextActionNo = 6;
 const bundle = makeBundle(
     {
         'registry.json': JSON.stringify(registry),
@@ -399,6 +401,98 @@ const conflictResult = await new ExecutionRunner(
 ).run(conflictContext);
 assert.equal(conflictResult.state, 'unknown');
 assert.equal(launches, beforeConflictLaunches);
+const deniedStartConnection = new RecordConnection(
+    channel,
+    'T1',
+    store.currentVersion('T1'),
+    'known-start-rejection',
+);
+const deniedStartContext = await deniedStartConnection.prepare(
+    'U4',
+    store.requestContext('U4').requestVersion,
+    isolated,
+    [],
+    approval,
+);
+assert.ok(deniedStartContext);
+const deniedStartPort = deniedStartConnection.runner({
+    ...ui,
+    launch: (request) => {
+        const source = ui.launch(request);
+        return {
+            [Symbol.dispose]: () => source[Symbol.dispose](),
+            observations: {
+                async *[Symbol.asyncIterator]() {
+                    for await (const event of source.observations)
+                        yield event.kind === 'spawned'
+                            ? { ...event, startedAt: 0 }
+                            : event;
+                },
+            },
+        };
+    },
+});
+const deniedStartResult = await new ExecutionRunner(
+    deniedStartPort,
+    recordCaptureLimits,
+).run(deniedStartContext);
+assert.equal(deniedStartResult.state, 'unknown');
+assert.deepEqual(deniedStartResult.facts?.termination, {
+    kind: 'exit',
+    code: 0,
+});
+const deniedStartSaved = await deniedStartConnection.execution(
+    deniedStartContext.attempt.attemptId,
+);
+assert.equal(deniedStartSaved.state.status, 'unknown');
+assert.equal(deniedStartSaved.state.result?.outcome, 'unknown');
+assert.equal(deniedStartSaved.state.integrity, 'incomplete');
+assert.ok((deniedStartSaved.state.missingStdoutBytes ?? 0) > 0);
+const finalUnknown = submitted
+    .slice()
+    .reverse()
+    .find(
+        (c) =>
+            c.type === 'execution.finished' &&
+            c.payload.attemptId === deniedStartContext.attempt.attemptId,
+    );
+assert.ok(finalUnknown);
+if (finalUnknown.type === 'execution.finished')
+    assert.equal(finalUnknown.payload.outcome, 'unknown');
+const deniedOutputChannel: RecordChannel = {
+    ...channel,
+    submit: async (c) => {
+        if (c.type === 'execution.output')
+            throw new KnownRecordRejection('人工の確定非適用');
+        return channel.submit(c);
+    },
+};
+const deniedOutputConnection = new RecordConnection(
+    deniedOutputChannel,
+    'T1',
+    store.currentVersion('T1'),
+    'known-output-rejection',
+);
+const deniedOutputContext = await deniedOutputConnection.prepare(
+    'U5',
+    store.requestContext('U5').requestVersion,
+    isolated,
+    [],
+    approval,
+);
+assert.ok(deniedOutputContext);
+const deniedOutputResult = await new ExecutionRunner(
+    deniedOutputConnection.runner(ui),
+    recordCaptureLimits,
+).run(deniedOutputContext);
+assert.equal(deniedOutputResult.state, 'ended');
+assert.equal(deniedOutputResult.facts?.output.uncertainBytes, 0);
+const deniedOutputSaved = await deniedOutputConnection.execution(
+    deniedOutputContext.attempt.attemptId,
+);
+assert.equal(deniedOutputSaved.state.status, 'ended');
+assert.equal(deniedOutputSaved.state.result?.exitCode, 0);
+assert.equal(deniedOutputSaved.state.integrity, 'incomplete');
 console.log(
     '正式checkpointのSQLite・実Bash・固定本文・seq保存後read・ranとdoneの分離・開示切替・二重起動防止を確認しました',
 );

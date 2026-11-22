@@ -4,6 +4,7 @@ import {
     type CapturePort,
     type CaptureSummary,
     ExecutionCapture,
+    KnownNotApplied,
     type ObservedOutput,
     validateCaptureLimits,
     withDeadline,
@@ -100,7 +101,7 @@ export class ExecutionRunner<Context, Claim> {
         try {
             return await withDeadline(operation, this.limits.ackTimeoutMs);
         } catch (error) {
-            this.port.suspend?.();
+            if (!(error instanceof KnownNotApplied)) this.port.suspend?.();
             throw error;
         }
     }

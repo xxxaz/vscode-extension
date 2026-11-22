@@ -20,6 +20,26 @@ import {
 
 const command = "printf '原文\\n'";
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+test('開示権限の非同期照会中に停止したら同じreadも変更不可を返す', async () => {
+    const f = fixture();
+    let finish: (v: boolean) => void = () => {},
+        entered: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+    });
+    const permission = new Promise<boolean>((resolve) => {
+        finish = resolve;
+    });
+    const access = f.connection.disclosure(f.attempt.attemptId, () => {
+        entered();
+        return permission;
+    });
+    const reading = access.read();
+    await waiting;
+    f.connection.runner(f.ui).suspend?.();
+    finish(true);
+    assert.equal((await reading).canChangeDisclosure, false);
+});
 test('同じ正式readの依頼版と本文を表示し、組違いと確認中の改訂はDB送信前に拒否する', async () => {
     const f = fixture(),
         original = f.channel.review;
