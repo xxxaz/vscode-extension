@@ -415,6 +415,7 @@ const deniedStartContext = await deniedStartConnection.prepare(
     approval,
 );
 assert.ok(deniedStartContext);
+const beforeStartWarnings = warnings.length;
 const deniedStartPort = deniedStartConnection.runner({
     ...ui,
     launch: (request) => {
@@ -432,11 +433,30 @@ const deniedStartPort = deniedStartConnection.runner({
         };
     },
 });
+let deniedStartReadVerified = false;
+const readStartFinished = deniedStartPort.readFinished;
+deniedStartPort.readFinished = async (c) => {
+    const saved = await readStartFinished(c);
+    deniedStartReadVerified = true;
+    return saved;
+};
 const deniedStartResult = await new ExecutionRunner(
     deniedStartPort,
     recordCaptureLimits,
 ).run(deniedStartContext);
 assert.equal(deniedStartResult.state, 'unknown');
+assert.equal(deniedStartReadVerified, true);
+assert.ok(
+    warnings
+        .slice(beforeStartWarnings)
+        .some((v) => v.includes('開始記録が確定拒否')),
+);
+assert.equal(
+    warnings
+        .slice(beforeStartWarnings)
+        .some((v) => v.includes('起動事実の保存が不明')),
+    false,
+);
 assert.deepEqual(deniedStartResult.facts?.termination, {
     kind: 'exit',
     code: 0,

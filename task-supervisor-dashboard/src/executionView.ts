@@ -41,6 +41,7 @@ export function mountExecutionOutput(host: HTMLElement) {
                 status.textContent =
                     '表示に欠落があります。保存済み出力を再取得してください';
             const line = doc.createElement('span');
+            line.style.display = 'inline';
             line.dataset.sequence = String(part.sequence);
             line.dataset.stream = part.stream;
             line.textContent = part.text;

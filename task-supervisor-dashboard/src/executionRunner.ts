@@ -191,9 +191,11 @@ export class ExecutionRunner<Context, Claim> {
                                 'running',
                                 '起動とキック記録が保存されました',
                             );
-                        } catch {
+                        } catch (error) {
                             capture.stopSaving(
-                                '起動事実の保存が不明です。出力を全文保存できていません',
+                                error instanceof KnownNotApplied
+                                    ? '開始記録が確定拒否されました。出力を全文保存できていません'
+                                    : '起動事実の保存が不明です。出力を全文保存できていません',
                             );
                         }
                     } else if (observation.kind === 'lost-output') {

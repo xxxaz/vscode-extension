@@ -14,7 +14,9 @@ const tick = async () => {
     await Promise.resolve();
 };
 test('保存済み出力の追加は原文・既存DOM・読みかけのスクロールを保持する', () => {
-    const dom = new JSDOM('<main></main>');
+    const dom = new JSDOM(
+        '<style>.field-value > * { display: block; }</style><main></main>',
+    );
     using _cleanup = { [Symbol.dispose]: () => dom.window.close() };
     const host = dom.window.document.querySelector('main');
     assert.ok(host);
@@ -34,6 +36,9 @@ test('保存済み出力の追加は原文・既存DOM・読みかけのスク�
         sha256: 'fixture',
     });
     const first = output.firstChild;
+    const span = output.querySelector('span');
+    assert.ok(span);
+    assert.equal(dom.window.getComputedStyle(span).display, 'inline');
     assert.equal(host.querySelector('script'), null);
     assert.equal(output.scrollTop, 120);
     view.showSaved({

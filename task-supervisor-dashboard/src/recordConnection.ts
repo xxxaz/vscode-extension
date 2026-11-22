@@ -508,6 +508,7 @@ export class RecordConnection {
                 const value = await this.execution(attemptId),
                     d = value.state.disclosure;
                 const permitted =
+                    this.writable &&
                     'command' in value.attempt &&
                     (await withDeadline(canChange(), this.responseTimeoutMs));
                 return {

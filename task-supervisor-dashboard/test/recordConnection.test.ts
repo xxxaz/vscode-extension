@@ -20,6 +20,20 @@ import {
 
 const command = "printf '原文\\n'";
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+test('停止済みの開示readは変更権限を照会せず、正式な設定を表示する', async () => {
+    const f = fixture();
+    let calls = 0;
+    f.connection.runner(f.ui).suspend?.();
+    const view = await f.connection
+        .disclosure(f.attempt.attemptId, async () => {
+            calls++;
+            throw Error('権限照会停止中');
+        })
+        .read();
+    assert.equal(view.canChangeDisclosure, false);
+    assert.equal(view.aiDisclosure, 'denied');
+    assert.equal(calls, 0);
+});
 test('開示権限の非同期照会中に停止したら同じreadも変更不可を返す', async () => {
     const f = fixture();
     let finish: (v: boolean) => void = () => {},
