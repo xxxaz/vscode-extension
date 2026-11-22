@@ -1137,3 +1137,45 @@ test('コピーはIDと表示版だけを送り、更新後も同じボタンと
         app.close();
     }
 });
+test('遅いコピーの成功や失敗が記録操作の結果とbusyを上書きしない', () => {
+    const app = setup();
+    try {
+        app.update();
+        app.mounted.update({
+            type: 'status',
+            message: '記録操作のエラー',
+            failed: true,
+            state: 'error',
+        });
+        const status = app.host.querySelector('.status:not(.copy-feedback)');
+        assert.ok(status);
+        app.mounted.update({
+            type: 'copy-status',
+            id: 'U1',
+            message: 'U1 コピー成功',
+            failed: false,
+            state: 'success',
+        });
+        assert.equal(status.textContent, '記録操作のエラー');
+        assert.equal(status.getAttribute('data-state'), 'failed');
+        app.mounted.update({ type: 'status', message: '記録中', busy: true });
+        app.mounted.update({
+            type: 'copy-status',
+            id: 'U2',
+            message: 'U2 コピー失敗',
+            failed: true,
+            state: 'error',
+        });
+        assert.equal(status.textContent, '記録中');
+        assert.equal(
+            app.host.querySelector('.board')?.getAttribute('aria-busy'),
+            'true',
+        );
+        assert.equal(
+            app.host.querySelector('.copy-feedback')?.textContent,
+            'U2 コピー失敗',
+        );
+    } finally {
+        app.close();
+    }
+});

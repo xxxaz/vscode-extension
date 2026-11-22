@@ -63,6 +63,13 @@ export type BoardMessage =
 export type BoardUpdate =
     | { type: 'snapshot'; snapshot: BoardSnapshot }
     | {
+          type: 'copy-status';
+          id: string;
+          message: string;
+          failed: boolean;
+          state: 'success' | 'error';
+      }
+    | {
           type: 'status';
           message: string;
           failed?: boolean;

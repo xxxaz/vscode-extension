@@ -4,6 +4,7 @@ import type { ExecutionPreview } from './executionRunner.ts';
 
 // showSavedには正式DBのack後readを照合した出力だけを渡す。
 export function mountExecutionOutput(host: HTMLElement) {
+    const pagePieces = 8;
     const doc = host.ownerDocument;
     const root = doc.createElement('section');
     const status = doc.createElement('p');
@@ -13,12 +14,94 @@ export function mountExecutionOutput(host: HTMLElement) {
     output.tabIndex = 0;
     output.style.maxHeight = '28rem';
     output.style.overflow = 'auto';
-    root.append(status, output);
+    const range = doc.createElement('p');
+    range.className = 'execution-range';
+    const previous = doc.createElement('button'),
+        next = doc.createElement('button'),
+        latest = doc.createElement('button');
+    for (const button of [previous, next, latest]) button.type = 'button';
+    previous.textContent = '前の出力';
+    next.textContent = '次の出力';
+    latest.textContent = '最新の出力を追う';
+    root.append(status, range, previous, next, latest, output);
     host.append(root);
+    const parts: Readonly<ObservedOutput>[] = [];
     let bytes = 0,
         lastSequence = 0,
-        disposed = false;
+        disposed = false,
+        start = 0,
+        following = true;
+    const controls = () => {
+        previous.disabled = start === 0;
+        next.disabled = start + pagePieces >= parts.length;
+        latest.disabled = following;
+        const shown = parts.slice(start, start + pagePieces);
+        range.textContent = shown.length
+            ? `表示 seq ${shown[0].sequence}〜${shown[shown.length - 1].sequence} / 取得済み最新 ${lastSequence}（最大8片・128KiB。前後へ移動して全文を表示）`
+            : '保存済み出力はまだありません';
+    };
+    const render = (pin: boolean, top: number) => {
+        const existing = new Map(
+            Array.from(output.children).map((n) => [
+                (n as HTMLElement).dataset.sequence,
+                n,
+            ]),
+        );
+        const nodes = parts.slice(start, start + pagePieces).map((part) => {
+            const key = String(part.sequence),
+                old = existing.get(key);
+            if (old) return old;
+            const line = doc.createElement('span');
+            line.style.display = 'inline';
+            line.dataset.sequence = key;
+            line.dataset.stream = part.stream;
+            line.textContent = part.text;
+            return line;
+        });
+        for (const node of Array.from(output.children))
+            if (!nodes.includes(node)) node.remove();
+        for (const [index, node] of nodes.entries())
+            if (output.children[index] !== node)
+                output.insertBefore(node, output.children[index] ?? null);
+        output.scrollTop = pin ? output.scrollHeight : top;
+        controls();
+    };
+    const onPrevious = () => {
+        if (disposed) return;
+        following = false;
+        start = Math.max(0, start - pagePieces);
+        render(false, 0);
+    };
+    const onNext = () => {
+        if (disposed) return;
+        following = false;
+        start = Math.min(
+            Math.max(0, parts.length - pagePieces),
+            start + pagePieces,
+        );
+        render(false, 0);
+    };
+    const onLatest = () => {
+        if (disposed) return;
+        following = true;
+        start = Math.max(0, parts.length - pagePieces);
+        render(true, 0);
+    };
+    const onScroll = () => {
+        if (
+            following &&
+            output.scrollHeight - output.clientHeight - output.scrollTop > 24
+        ) {
+            following = false;
+            controls();
+        }
+    };
+    previous.addEventListener('click', onPrevious);
+    next.addEventListener('click', onNext);
+    latest.addEventListener('click', onLatest);
+    output.addEventListener('scroll', onScroll);
     status.textContent = 'DBに保存された出力を待っています';
+    controls();
     return {
         showSaved(part: Readonly<ObservedOutput>) {
             if (disposed) return;
@@ -26,7 +109,9 @@ export function mountExecutionOutput(host: HTMLElement) {
                 !Number.isSafeInteger(part.sequence) ||
                 part.sequence <= lastSequence ||
                 part.sequence > RECORD_LIMITS.chunks ||
+                !Number.isSafeInteger(part.byteLength) ||
                 part.byteLength < 0 ||
+                part.byteLength > RECORD_LIMITS.chunkBytes ||
                 bytes + part.byteLength > RECORD_LIMITS.attemptBytes
             ) {
                 status.textContent =
@@ -34,27 +119,31 @@ export function mountExecutionOutput(host: HTMLElement) {
                 return;
             }
             const pinned =
+                following &&
                 output.scrollHeight - output.clientHeight - output.scrollTop <=
-                24;
-            const previous = output.scrollTop;
+                    24;
+            const before = output.scrollTop;
+            if (!pinned) following = false;
             if (part.sequence !== lastSequence + 1)
                 status.textContent =
                     '表示に欠落があります。保存済み出力を再取得してください';
-            const line = doc.createElement('span');
-            line.style.display = 'inline';
-            line.dataset.sequence = String(part.sequence);
-            line.dataset.stream = part.stream;
-            line.textContent = part.text;
-            output.append(line);
+            parts.push(Object.freeze({ ...part }));
             bytes += part.byteLength;
             lastSequence = part.sequence;
-            output.scrollTop = pinned ? output.scrollHeight : previous;
+            if (following) start = Math.max(0, parts.length - pagePieces);
+            render(pinned, before);
         },
         status(message: string) {
             if (!disposed) status.textContent = message;
         },
         dispose() {
             disposed = true;
+            previous.removeEventListener('click', onPrevious);
+            next.removeEventListener('click', onNext);
+            latest.removeEventListener('click', onLatest);
+            output.removeEventListener('scroll', onScroll);
+            parts.length = 0;
+            output.replaceChildren();
             root.remove();
         },
     };

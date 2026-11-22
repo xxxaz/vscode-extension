@@ -51,6 +51,9 @@ test('保存済み出力の追加は原文・既存DOM・読みかけのスク�
     assert.equal(output.firstChild, first);
     assert.equal(output.scrollTop, 120);
     output.scrollTop = 1900;
+    Array.from(host.querySelectorAll('button'))
+        .find((b) => b.textContent === '最新の出力を追う')
+        ?.click();
     view.showSaved({
         sequence: 3,
         stream: 'stdout',
@@ -69,6 +72,101 @@ test('保存済み出力の追加は原文・既存DOM・読みかけのスク�
     assert.match(host.textContent ?? '', /表示に欠落/);
     view.dispose();
     assert.equal(host.children.length, 0);
+});
+test('8MiBの全文はUI cacheに保ち、DOMは8片/128KiB以下で先頭・中間・末尾へ移動する', () => {
+    const dom = new JSDOM('<main></main>');
+    using _cleanup = { [Symbol.dispose]: () => dom.window.close() };
+    const host = dom.window.document.querySelector('main');
+    assert.ok(host);
+    const view = mountExecutionOutput(host),
+        output = host.querySelector('pre');
+    assert.ok(output);
+    const button = (text: string) => {
+        const b = Array.from(host.querySelectorAll('button')).find(
+            (b) => b.textContent === text,
+        );
+        assert.ok(b);
+        return b;
+    };
+    const originals: string[] = [];
+    const shown = () => Array.from(output.querySelectorAll('span'));
+    let reading: Element | undefined;
+    for (let i = 1; i <= 512; i++) {
+        const prefix = `片${i}:日本語😀`,
+            remaining = 16384 - new TextEncoder().encode(prefix).length;
+        const text =
+            prefix +
+            'あ'.repeat(Math.floor(remaining / 3)) +
+            'x'.repeat(remaining % 3);
+        originals.push(text);
+        view.showSaved({
+            sequence: i,
+            stream: i % 2 ? 'stdout' : 'stderr',
+            text,
+            byteLength: 16384,
+            sha256: 'fixture',
+        });
+        assert.ok(shown().length <= 8);
+        assert.ok(
+            new TextEncoder().encode(output.textContent ?? '').length <=
+                128 * 1024,
+        );
+        if (i === 256) {
+            button('前の出力').click();
+            output.scrollTop = 70;
+            reading = shown()[0];
+        }
+        if (i > 256) {
+            assert.equal(shown()[0], reading);
+            assert.equal(output.scrollTop, 70);
+        }
+    }
+    button('最新の出力を追う').click();
+    assert.equal(shown()[0].dataset.sequence, '505');
+    const all = new Map<number, string>();
+    for (;;) {
+        for (const node of shown())
+            all.set(Number(node.dataset.sequence), node.textContent ?? '');
+        if (button('前の出力').disabled) break;
+        button('前の出力').click();
+    }
+    assert.equal(all.size, 512);
+    assert.equal(
+        Array.from({ length: 512 }, (_, i) => all.get(i + 1)).join(''),
+        originals.join(''),
+    );
+    button('次の出力').click();
+    assert.equal(shown()[0].dataset.sequence, '9');
+    view.dispose();
+    assert.equal(output.children.length, 0);
+    assert.equal(host.children.length, 0);
+});
+test('最大4096片でも表示DOMを増やさず、全文を窓の移動で確認できる', () => {
+    const dom = new JSDOM('<main></main>');
+    using _cleanup = { [Symbol.dispose]: () => dom.window.close() };
+    const host = dom.window.document.querySelector('main');
+    assert.ok(host);
+    const view = mountExecutionOutput(host),
+        output = host.querySelector('pre');
+    assert.ok(output);
+    for (let i = 1; i <= 4096; i++) {
+        const text = `${i}:日本語😀\n`;
+        view.showSaved({
+            sequence: i,
+            stream: 'stdout',
+            text,
+            byteLength: new TextEncoder().encode(text).length,
+            sha256: 'fixture',
+        });
+        assert.ok(output.children.length <= 8);
+    }
+    assert.equal((output.firstChild as HTMLElement).dataset.sequence, '4089');
+    for (let i = 0; i < 256; i++)
+        Array.from(host.querySelectorAll('button'))
+            .find((b) => b.textContent === '前の出力')
+            ?.click();
+    assert.equal((output.firstChild as HTMLElement).dataset.sequence, '2041');
+    view.dispose();
 });
 test('固定版の資料・コマンド全文を文字で表示し、未接続と未確認では確定できない', () => {
     const dom = new JSDOM('<main></main>');

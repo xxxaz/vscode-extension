@@ -1,5 +1,7 @@
 // cspell:words noprofile norc
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { nodeExecutionProcess } from '../src/nodeExecutionProcess.ts';
 
@@ -8,6 +10,48 @@ const request = (stdin: string, cwd = process.cwd()) => ({
     args: ['--noprofile', '--norc', '-p', '-s'] as const,
     stdin,
     cwd,
+});
+test('同時in-flightの両stream合計128KiBを保ち、超過byteをstream別に報告する', async () => {
+    class Child extends EventEmitter {
+        pid = 123;
+        stdin = new PassThrough();
+        stdout = new PassThrough();
+        stderr = new PassThrough();
+    }
+    const child = new Child();
+    using source = nodeExecutionProcess(
+        request('printf fixture'),
+        () => true,
+        () => child,
+    );
+    child.emit('spawn');
+    // pause済みでも両streamの到着済みcallbackが残る最悪条件を与える。
+    child.stdout.emit('data', Buffer.alloc(64 * 1024, 65));
+    child.stderr.emit('data', Buffer.alloc(64 * 1024, 66));
+    child.stdout.emit('data', Buffer.alloc(3, 67));
+    child.stderr.emit('data', Buffer.alloc(5, 68));
+    child.emit('close', 0, null);
+    const events = [];
+    for await (const event of source.observations) events.push(event);
+    assert.equal(events[0].kind, 'spawned');
+    assert.equal(
+        events
+            .filter((e) => e.kind === 'output')
+            .reduce(
+                (sum, e) => sum + (e.kind === 'output' ? e.bytes.length : 0),
+                0,
+            ),
+        128 * 1024,
+    );
+    assert.deepEqual(
+        events.filter((e) => e.kind === 'lost-output'),
+        [
+            { kind: 'lost-output', stream: 'stdout', bytes: 3 },
+            { kind: 'lost-output', stream: 'stderr', bytes: 5 },
+        ],
+    );
+    assert.deepEqual(events.at(-1), { kind: 'closed', code: 0, signal: null });
+    assert.equal(child.stdin.read().toString(), 'printf fixture');
 });
 test('実Bashはstdinの全文を実行しspawn・stdout/stderr・終了値を観測する', async () => {
     using source = nodeExecutionProcess(

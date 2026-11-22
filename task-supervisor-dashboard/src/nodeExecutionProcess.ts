@@ -1,6 +1,7 @@
 // cspell:words noprofile norc
-import { spawn } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
 import type {
     ProcessObservation,
     ProcessSource,
@@ -9,10 +10,20 @@ import type {
 
 type Launch = RunnerPort<never, never>['launch'];
 const queueBytes = 128 * 1024;
+type ObservedChild = Pick<
+    ChildProcessWithoutNullStreams,
+    'stdout' | 'stderr' | 'stdin' | 'pid'
+> &
+    Pick<EventEmitter, 'on' | 'off'>;
 // 所在の証明は正式runner登録との接続側で行う。remoteNameだけを認可に使わない。
 export function nodeExecutionProcess(
     request: Parameters<Launch>[0],
     verifyLocation: () => boolean,
+    start: (request: Parameters<Launch>[0]) => ObservedChild = (r) =>
+        spawn(r.executable, [...r.args], {
+            cwd: r.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }),
 ): ProcessSource {
     if (!verifyLocation())
         throw new Error('本人のDevContainer実行場所を確認できません');
@@ -21,10 +32,7 @@ export function nodeExecutionProcess(
         request.args.join(' ') !== '--noprofile --norc -p -s'
     )
         throw new Error('実行形式が一致しません');
-    const child = spawn(request.executable, [...request.args], {
-        cwd: request.cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const child = start(request);
     const queue: ProcessObservation[] = [];
     const lost = { stdout: 0, stderr: 0 };
     let buffered = 0,

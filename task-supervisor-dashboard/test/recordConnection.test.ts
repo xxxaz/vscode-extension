@@ -20,6 +20,22 @@ import {
 
 const command = "printf '原文\\n'";
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+test('型付きTask版競合は非適用が既知でも同接続の変更を停止する', async () => {
+    const f = fixture(),
+        access = f.connection.disclosure(f.attempt.attemptId, async () => true);
+    f.setSubmit(() => {
+        throw new KnownRecordRejection('Task版が更新された', true);
+    });
+    await assert.rejects(
+        access.changeDisclosure((await access.read()).context, true),
+    );
+    assert.equal((await access.read()).canChangeDisclosure, false);
+    f.setSubmit(() => ({ disclosureRevision: 1 }));
+    await assert.rejects(
+        access.changeDisclosure((await access.read()).context, false),
+    );
+    assert.equal(f.commands.length, 1);
+});
 test('停止済みの開示readは変更権限を照会せず、正式な設定を表示する', async () => {
     const f = fixture();
     let calls = 0;

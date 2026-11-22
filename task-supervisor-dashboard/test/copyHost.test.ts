@@ -31,6 +31,7 @@ const command = [
 async function host(
     mode: 'normal' | 'retry' | 'removed' | 'untrusted',
     clipboardError?: Error,
+    clipboardDelay?: Promise<void>,
 ) {
     const root = await mkdtemp(join(tmpdir(), 't341-panel-host-'));
     if (mode === 'normal') {
@@ -114,6 +115,7 @@ async function host(
             clipboard: {
                 async writeText(value: string) {
                     clipboardWrites.push(value);
+                    await clipboardDelay;
                     if (clipboardError) throw clipboardError;
                 },
             },
@@ -217,6 +219,11 @@ async function host(
         panels,
         messages,
         clipboardWrites,
+        perform: async (operation: string) => {
+            const run = commands.get(`xxxaz.task-supervisor.${operation}`);
+            assert.ok(run);
+            await run();
+        },
         updates,
         revokeTrust() {
             workspace.isTrusted = false;
@@ -254,7 +261,7 @@ async function copyCommand(app: Awaited<ReturnType<typeof host>>) {
     const { id, revision } = card.command;
     app.panels[0].webview.receive({ type: 'copy-command', id, revision });
     await setImmediate();
-    return app.updates.filter((value) => value.type === 'status');
+    return app.updates.filter((value) => value.type === 'copy-status');
 }
 for (const mode of ['removed', 'untrusted'] as const) {
     test(`実activateの非同期初期化中に${mode === 'removed' ? 'ルートを除外' : '信頼を解除'}したら購読と原票読取りの前に拒否する`, async () => {
@@ -282,6 +289,33 @@ test('実activateで一覧のコマンド原文をコピーし、成功を表示
         assert.equal(status?.state, 'success');
         assert.match(status.message, /U341 のコマンドをコピーしました/);
     } finally {
+        await app.close();
+    }
+});
+test('先発コピーの遅い完了後も後発の記録操作のエラーが残る', async () => {
+    let unblock: () => void = () => {};
+    const delay = new Promise<void>((resolve) => {
+        unblock = resolve;
+    });
+    const app = await host('normal', undefined, delay);
+    try {
+        await app.open();
+        await copyCommand(app);
+        await app.perform('complete');
+        const failed = app.updates.filter((v) => v.type === 'status').at(-1);
+        assert.equal(failed?.failed, true);
+        unblock();
+        await setImmediate();
+        assert.equal(
+            app.updates.filter((v) => v.type === 'status').at(-1),
+            failed,
+        );
+        assert.equal(
+            app.updates.filter((v) => v.type === 'copy-status').at(-1)?.state,
+            'success',
+        );
+    } finally {
+        unblock();
         await app.close();
     }
 });

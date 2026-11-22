@@ -401,6 +401,14 @@ const conflictResult = await new ExecutionRunner(
 ).run(conflictContext);
 assert.equal(conflictResult.state, 'unknown');
 assert.equal(launches, beforeConflictLaunches);
+assert.equal(
+    (
+        await conflictConnection
+            .disclosure(conflictContext.attempt.attemptId, async () => true)
+            .read()
+    ).canChangeDisclosure,
+    false,
+);
 const deniedStartConnection = new RecordConnection(
     channel,
     'T1',
