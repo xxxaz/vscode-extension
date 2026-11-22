@@ -31,6 +31,7 @@ export interface CaptureSummary {
     displayUnavailable: boolean;
 }
 export interface CapturePort {
+    suspend?(): void;
     append(part: Readonly<ObservedOutput>): Promise<number>;
     readSaved(sequence: number): Promise<ObservedOutput>;
     showSaved(part: Readonly<ObservedOutput>): void;
@@ -237,6 +238,7 @@ export class ExecutionCapture {
                 if (error instanceof OutputNotStored)
                     this.discard(stream, part.byteLength);
                 else {
+                    this.port.suspend?.();
                     this.facts.uncertainBytes += part.byteLength;
                     this.facts[
                         stream === 'stdout'

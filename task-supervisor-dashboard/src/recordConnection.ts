@@ -5,6 +5,7 @@ import {
     type ExecutionReadResult,
     RECORD_LIMITS,
     type RecordCommand,
+    type RecordCommandHeader,
     type RecordOperation,
     type RecordRead,
     type RecordReadResult,
@@ -14,6 +15,7 @@ import {
     type CaptureLimits,
     type ObservedOutput,
     OutputNotStored,
+    withDeadline,
 } from './executionCapture.ts';
 import type {
     ExecutionFacts,
@@ -25,6 +27,17 @@ import type { ResultAccessAdapter } from './executionView.ts';
 // transportが認可と正式CommandResultのapplied/code/idを検査した後の内部port。
 // payloadやsourceからRecordCallerを生成しない。公開transportは未接続のまま。
 export interface RecordChannel {
+    // 正式request-context同一readから作る内部projection。UIの本文を正本へ代入しない。
+    review(actionId: string): Promise<
+        Pick<RecordCommandHeader, 'targetId'> & {
+            input: Extract<
+                RecordOperation,
+                { type: 'execution.prepare' }
+            >['payload'];
+            command: string;
+            taskVersion: number;
+        }
+    >;
     submit(
         command: RecordCommand,
     ): Promise<{ record: RecordResult; taskVersion: number }>;
@@ -35,7 +48,6 @@ export interface PreparedExecution {
     readonly preview: Readonly<ExecutionPreview>;
 }
 export interface PrepareApproval {
-    command: string;
     allowed(): Promise<boolean>;
     confirm(preview: Readonly<ExecutionPreview>): Promise<boolean>;
     // DB受付前に小さいprepare操作とIDを保存する。本文・出力を別正本へ複製しない。
@@ -82,11 +94,13 @@ export class RecordConnection {
     private readonly channel: RecordChannel;
     private readonly taskId: string;
     private readonly source: string;
+    private readonly responseTimeoutMs: number;
     constructor(
         channel: RecordChannel,
         taskId: string,
         taskVersion: number,
         source: string,
+        responseTimeoutMs = recordCaptureLimits.ackTimeoutMs,
     ) {
         if (
             !/^T[1-9]\d*$/.test(taskId) ||
@@ -98,6 +112,9 @@ export class RecordConnection {
         this.channel = channel;
         this.taskId = taskId;
         this.source = source;
+        if (!Number.isSafeInteger(responseTimeoutMs) || responseTimeoutMs <= 0)
+            throw new Error('受付期限は正の整数が必要です');
+        this.responseTimeoutMs = responseTimeoutMs;
     }
     private send(
         operation: RecordOperation,
@@ -116,10 +133,18 @@ export class RecordConnection {
                 source: this.source,
                 ...operation,
             };
-            await beforeSend?.(Object.freeze(structuredClone(command)));
+            if (beforeSend)
+                await withDeadline(
+                    beforeSend(Object.freeze(structuredClone(command))),
+                    this.responseTimeoutMs,
+                );
+            if (!this.writable) throw new Error('送信前に受付が停止しました');
             let receipt: Awaited<ReturnType<RecordChannel['submit']>>;
             try {
-                receipt = await this.channel.submit(command);
+                receipt = await withDeadline(
+                    this.channel.submit(command),
+                    this.responseTimeoutMs,
+                );
             } catch (error) {
                 if (
                     !(error instanceof KnownRecordRejection) ||
@@ -142,8 +167,13 @@ export class RecordConnection {
         this.tail = pending.catch(() => undefined);
         return pending;
     }
+    private read<Q extends RecordRead>(
+        query: Q,
+    ): Promise<RecordReadResult<Q['type']>> {
+        return withDeadline(this.channel.read(query), this.responseTimeoutMs);
+    }
     execution(attemptId: string) {
-        return this.channel.read({
+        return this.read({
             schemaVersion: 1,
             requestId: randomUUID(),
             targetId: this.taskId,
@@ -155,7 +185,7 @@ export class RecordConnection {
         documentId: string,
         revision: number,
     ): Promise<DocumentRecord> {
-        const value = await this.channel.read({
+        const value = await this.read({
             schemaVersion: 1,
             requestId: randomUUID(),
             targetId: this.taskId,
@@ -180,11 +210,22 @@ export class RecordConnection {
         documents: readonly DocumentRecord[],
         approval: PrepareApproval,
     ): Promise<PreparedExecution | null> {
+        const review = await withDeadline(
+            this.channel.review(actionId),
+            this.responseTimeoutMs,
+        );
+        if (
+            review.targetId !== this.taskId ||
+            review.input.actionId !== actionId ||
+            review.input.requestVersion !== requestVersion ||
+            review.taskVersion !== this.taskVersion
+        )
+            throw new Error('確認する本文と正式な依頼版・Task版が一致しません');
         for (const doc of documents)
             if (doc.taskId !== this.taskId || doc.sha256 !== sha(doc.body))
                 throw new Error('資料の所属または固定本文が一致しません');
         const preview = Object.freeze({
-            command: approval.command,
+            command: review.command,
             requestLabel: actionId,
             workingDirectory: cwd,
             documents: Object.freeze(
@@ -196,16 +237,42 @@ export class RecordConnection {
                 ),
             ),
         });
-        if (!preview.command.trim() || !cwd || !(await approval.allowed()))
+        if (
+            !preview.command.trim() ||
+            !cwd ||
+            !(await withDeadline(approval.allowed(), this.responseTimeoutMs))
+        )
             return null;
         if (!(await approval.confirm(preview))) return null;
-        if (!(await approval.allowed())) return null;
+        if (!(await withDeadline(approval.allowed(), this.responseTimeoutMs)))
+            return null;
         const receipt = await this.send(
             {
                 type: 'execution.prepare',
                 payload: { actionId, requestVersion },
             },
-            approval.keepReference,
+            async (c) => {
+                await approval.keepReference(c);
+                const latest = await withDeadline(
+                    this.channel.review(actionId),
+                    this.responseTimeoutMs,
+                );
+                if (
+                    latest.targetId !== review.targetId ||
+                    latest.input.actionId !== actionId ||
+                    latest.input.requestVersion !== requestVersion ||
+                    latest.command !== preview.command ||
+                    latest.taskVersion !== review.taskVersion ||
+                    c.expectedVersion !== review.taskVersion ||
+                    !(await withDeadline(
+                        approval.allowed(),
+                        this.responseTimeoutMs,
+                    ))
+                )
+                    throw new Error(
+                        '確認後に依頼版または実行場所が変わりました',
+                    );
+            },
         );
         if (!receipt.attemptId) throw new Error('保存された実行IDがありません');
         const value = await this.execution(receipt.attemptId);
@@ -241,11 +308,32 @@ export class RecordConnection {
         };
         return {
             ...ui,
-            allowed: async (c) =>
-                this.issued.has(c) &&
-                this.writable &&
-                c.preview.command === c.attempt.command &&
-                (await ui.allowed(c)),
+            allowed: async (c) => {
+                if (
+                    !this.issued.has(c) ||
+                    !this.writable ||
+                    c.preview.command !== c.attempt.command
+                )
+                    return false;
+                const allowed = await withDeadline(
+                    ui.allowed(c),
+                    this.responseTimeoutMs,
+                );
+                return (
+                    allowed &&
+                    this.writable &&
+                    this.issued.has(c) &&
+                    c.preview.command === c.attempt.command
+                );
+            },
+            suspend: () => {
+                this.writable = false;
+            },
+            launch: (request) => {
+                if (!this.writable)
+                    throw new Error('受付停止中のため起動しません');
+                return ui.launch(request);
+            },
             // prepare前の全文確認を通過したcontextだけを発行する。再確認で予約を残さない。
             confirm: async () => true,
             key: (c) => c.attempt.attemptId,
@@ -308,8 +396,11 @@ export class RecordConnection {
                             throw new Error('出力の保存ackが一致しません');
                         return ack.seq;
                     },
+                    suspend: () => {
+                        this.writable = false;
+                    },
                     readSaved: async (sequence) => {
-                        const result = await this.channel.read({
+                        const result = await this.read({
                             schemaVersion: 1,
                             requestId: randomUUID(),
                             targetId: this.taskId,
@@ -425,7 +516,10 @@ export class RecordConnection {
                     canChangeDisclosure:
                         this.writable &&
                         'command' in value.attempt &&
-                        (await canChange()),
+                        (await withDeadline(
+                            canChange(),
+                            this.responseTimeoutMs,
+                        )),
                     userDisplay:
                         'command' in value.attempt
                             ? '認可された本文readあり（本人の確認は別）'
@@ -449,7 +543,7 @@ export class RecordConnection {
                 if (
                     !this.writable ||
                     !('command' in current.attempt) ||
-                    !(await canChange())
+                    !(await withDeadline(canChange(), this.responseTimeoutMs))
                 )
                     throw new Error('開示変更の本人権限を確認できません');
                 const ack = await this.send({

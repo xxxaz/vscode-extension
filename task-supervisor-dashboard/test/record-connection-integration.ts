@@ -136,6 +136,21 @@ const caller: RecordCaller = {
 };
 const submitted: RecordCommand[] = [];
 const channel: RecordChannel = {
+    async review(actionId) {
+        const context = store.requestContext(actionId);
+        assert.equal(context.request.taskId, 'T1');
+        assert.equal(context.request.executionWhere, 'devcontainer');
+        assert.equal(typeof context.request.command, 'string');
+        return {
+            targetId: context.request.taskId,
+            input: {
+                actionId: context.actionId,
+                requestVersion: context.requestVersion,
+            },
+            command: context.request.command,
+            taskVersion: context.taskVersion,
+        };
+    },
     async submit(c) {
         submitted.push(structuredClone(c));
         const result = store.apply(parseRecordCommand(c), Date.now(), caller);
@@ -199,7 +214,6 @@ const document = await connection.document(
 );
 const prepareReferences: RecordCommand[] = [];
 const approval = {
-    command,
     allowed: async () => true,
     confirm: async (
         preview: Readonly<import('../src/executionRunner.ts').ExecutionPreview>,

@@ -36,6 +36,7 @@ export interface ExecutionFacts {
     output: CaptureSummary;
 }
 export interface RunnerPort<Context, Claim> {
+    suspend?(): void;
     key(context: Context): string;
     preview(context: Context): Readonly<ExecutionPreview>;
     // UI側だけのremoteName判定ではなく正式runner登録/所属/trustも確認する。
@@ -95,6 +96,14 @@ export class ExecutionRunner<Context, Claim> {
         });
         return result;
     }
+    private async bounded<T>(operation: Promise<T>): Promise<T> {
+        try {
+            return await withDeadline(operation, this.limits.ackTimeoutMs);
+        } catch (error) {
+            this.port.suspend?.();
+            throw error;
+        }
+    }
 
     private async execute(
         context: Context,
@@ -131,10 +140,7 @@ export class ExecutionRunner<Context, Claim> {
             if (!(await this.port.allowed(context))) return unknown();
             if (!(await this.port.reserveLocalLaunch(key))) return unknown();
             // この地点以降はラッチを解除せず、claimの応答不明でも再実行しない。
-            const claim = await withDeadline(
-                this.port.claim(context),
-                this.limits.ackTimeoutMs,
-            );
+            const claim = await this.bounded(this.port.claim(context));
             const fixed = this.port.claimedPreview(claim);
             if (
                 this.port.claimedKey(claim) !== key ||
@@ -176,9 +182,8 @@ export class ExecutionRunner<Context, Claim> {
                             throw new Error('重複した起動観測です');
                         spawnObserved = true;
                         try {
-                            await withDeadline(
+                            await this.bounded(
                                 this.port.started(claim, observation),
-                                this.limits.ackTimeoutMs,
                             );
                             startAcknowledged = true;
                             this.port.status(
@@ -231,14 +236,8 @@ export class ExecutionRunner<Context, Claim> {
                 ),
             };
             try {
-                await withDeadline(
-                    this.port.finished(claim, facts),
-                    this.limits.ackTimeoutMs,
-                );
-                const saved = await withDeadline(
-                    this.port.readFinished(claim),
-                    this.limits.ackTimeoutMs,
-                );
+                await this.bounded(this.port.finished(claim, facts));
+                const saved = await this.bounded(this.port.readFinished(claim));
                 const terminalMatches =
                     saved.termination.kind === termination.kind &&
                     (termination.kind === 'unknown' ||

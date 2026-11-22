@@ -1,3 +1,4 @@
+// cspell:words noprofile norc
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
@@ -19,6 +20,143 @@ import {
 
 const command = "printf '原文\\n'";
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+test('同じ正式readの依頼版と本文を表示し、組違いと確認中の改訂はDB送信前に拒否する', async () => {
+    const f = fixture(),
+        original = f.channel.review;
+    let confirms = 0;
+    f.channel.review = async (id) => ({
+        ...(await original(id)),
+        input: { actionId: id, requestVersion: 'another-version' },
+        command: '別の正式版',
+    });
+    await assert.rejects(
+        f.connection.prepare('U1', 'request-version', '/workspace', [], {
+            ...f.approval,
+            confirm: async () => {
+                confirms++;
+                return true;
+            },
+        }),
+    );
+    assert.equal(confirms, 0);
+    assert.equal(f.commands.length, 0);
+    f.channel.review = original;
+    await assert.rejects(
+        f.connection.prepare('U1', 'request-version', '/workspace', [], {
+            ...f.approval,
+            confirm: async (p) => {
+                assert.equal(p.command, command);
+                f.channel.review = async (id) => ({
+                    ...(await original(id)),
+                    input: { actionId: id, requestVersion: 'updated' },
+                    command: '改訂後',
+                });
+                return true;
+            },
+        }),
+    );
+    assert.equal(f.commands.length, 0);
+});
+test('prepare参照を保存中に所在が失効したら正式受付へ送らない', async () => {
+    const f = fixture();
+    let allowed = true;
+    await assert.rejects(
+        f.connection.prepare('U1', 'request-version', '/workspace', [], {
+            ...f.approval,
+            allowed: async () => allowed,
+            keepReference: async () => {
+                allowed = false;
+            },
+        }),
+    );
+    assert.equal(f.commands.length, 0);
+});
+test('内部write期限後は変更を停止し、遅延ackで自動復帰しない', async () => {
+    const f = fixture(5),
+        access = f.connection.disclosure(f.attempt.attemptId, async () => true);
+    let late: (r: RecordResult) => void = () => {
+        throw Error('未送信');
+    };
+    f.setSubmit(
+        () =>
+            new Promise((resolve) => {
+                late = resolve;
+            }),
+    );
+    await assert.rejects(
+        access.changeDisclosure((await access.read()).context, true),
+        /応答を確認できません/,
+    );
+    assert.equal((await access.read()).canChangeDisclosure, false);
+    late({ disclosureRevision: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal((await access.read()).canChangeDisclosure, false);
+    await assert.rejects(
+        access.changeDisclosure((await access.read()).context, false),
+    );
+    assert.equal(f.commands.length, 1);
+});
+test('非同期所在確認の途中と起動直前に接続停止を再検査する', async () => {
+    const f = fixture(),
+        c = await f.prepare();
+    let finishCheck: (v: boolean) => void = () => {};
+    const port = f.connection.runner({
+        ...f.ui,
+        allowed: () =>
+            new Promise((resolve) => {
+                finishCheck = resolve;
+            }),
+    });
+    const checking = port.allowed(c);
+    f.setSubmit(() => {
+        throw Error('通信不明');
+    });
+    const access = f.connection.disclosure(
+        c.attempt.attemptId,
+        async () => true,
+    );
+    await assert.rejects(
+        access.changeDisclosure((await access.read()).context, true),
+    );
+    finishCheck(true);
+    assert.equal(await checking, false);
+    assert.throws(
+        () =>
+            port.launch({
+                executable: '/bin/bash',
+                args: ['--noprofile', '--norc', '-p', '-s'],
+                stdin: command,
+                cwd: '/workspace',
+            }),
+        /受付停止中/,
+    );
+});
+test('capture側の短い期限が先に切れても接続へ不明を通知し開示変更を止める', async () => {
+    const f = fixture(100),
+        c = await f.prepare();
+    let late: (r: RecordResult) => void = () => {};
+    f.setSubmit(
+        () =>
+            new Promise((resolve) => {
+                late = resolve;
+            }),
+    );
+    const capture = new ExecutionCapture(f.connection.runner(f.ui).output(c), {
+        ...recordCaptureLimits,
+        ackTimeoutMs: 5,
+    });
+    await capture.consume('stdout', new TextEncoder().encode('A'));
+    assert.equal(capture.finish().status, 'unknown');
+    assert.equal(
+        (
+            await f.connection
+                .disclosure(c.attempt.attemptId, async () => true)
+                .read()
+        ).canChangeDisclosure,
+        false,
+    );
+    late({ stored: true, seq: 1 });
+});
 test('DB準備より前に全文確認し、取消と参照保存失敗では容量予約の受付を送らない', async () => {
     const f = fixture();
     let references = 0;
@@ -128,7 +266,7 @@ test('metadata-onlyと開示変更権限未確認は本人の本文表示とせ�
         assert.equal(f.commands.length, 0);
     }
 });
-function fixture() {
+function fixture(responseTimeoutMs?: number) {
     const attempt: ExecutionAttempt = {
         schemaVersion: 1,
         attemptId: 'attempt-1',
@@ -177,6 +315,14 @@ function fixture() {
             | undefined;
     const commands: RecordCommand[] = [];
     const channel: RecordChannel = {
+        async review(actionId) {
+            return {
+                targetId: 'T1',
+                input: { actionId, requestVersion: 'request-version' },
+                command,
+                taskVersion: version,
+            };
+        },
         async submit(c) {
             commands.push(structuredClone(c));
             assert.equal(c.expectedVersion, version);
@@ -199,11 +345,11 @@ function fixture() {
         'T1',
         version,
         'UIの自己申告は認可ではない',
+        responseTimeoutMs,
     );
     const shown: string[] = [],
         warnings: string[] = [];
     const approval = {
-        command,
         allowed: async () => true,
         confirm: async () => true,
         keepReference: async () => {},
@@ -231,6 +377,7 @@ function fixture() {
         warning: (s: string) => warnings.push(s),
     };
     return {
+        channel,
         attempt,
         value,
         commands,
