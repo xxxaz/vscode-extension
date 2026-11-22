@@ -1074,3 +1074,108 @@ test('詳細の各項目をspan・code・リンクごとに別行で表示し、
         dom.window.close();
     }
 });
+
+test('コピーはIDと表示版だけを送り、更新後も同じボタンと開閉を保持する', () => {
+    const app = setup();
+    try {
+        const initial = card();
+        initial.command = {
+            id: 'U1',
+            revision: 'a'.repeat(64),
+            text: 'echo 原文',
+        };
+        app.update(snapshot([initial]));
+        app.row('U1').open = true;
+        const button =
+            app.host.querySelector<HTMLButtonElement>('.copy-command')!;
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'a'.repeat(64),
+        });
+        assert.notEqual(app.host.getAttribute('aria-busy'), 'true');
+        const changed = {
+            ...initial,
+            command: {
+                ...initial.command,
+                revision: 'b'.repeat(64),
+                text: 'echo 更新',
+            },
+        };
+        app.update(snapshot([changed]));
+        assert.equal(app.host.querySelector('.copy-command'), button);
+        assert.equal(app.row('U1').open, true);
+        const stopped = snapshot([changed]);
+        stopped.userActions = {
+            status: 'unavailable',
+            viewVersion: 'stopped',
+            source: {
+                mode: 'legacy',
+                epoch: null,
+                fetchedAt: null,
+                error: { code: 'read-failed', message: '停止' },
+            },
+        };
+        app.update(stopped);
+        assert.equal(button.disabled, true);
+        const messages = app.messages.length;
+        button.click();
+        assert.equal(app.messages.length, messages);
+        app.update(snapshot([changed]));
+        assert.equal(app.host.querySelector('.copy-command'), button);
+        assert.equal(button.disabled, false);
+        button.click();
+        assert.deepEqual(app.messages.at(-1), {
+            type: 'copy-command',
+            id: 'U1',
+            revision: 'b'.repeat(64),
+        });
+        app.update(snapshot([card()]));
+        assert.equal(app.host.querySelector('.copy-command'), null);
+    } finally {
+        app.close();
+    }
+});
+test('遅いコピーの成功や失敗が記録操作の結果とbusyを上書きしない', () => {
+    const app = setup();
+    try {
+        app.update();
+        app.mounted.update({
+            type: 'status',
+            message: '記録操作のエラー',
+            failed: true,
+            state: 'error',
+        });
+        const status = app.host.querySelector('.status:not(.copy-feedback)');
+        assert.ok(status);
+        app.mounted.update({
+            type: 'copy-status',
+            id: 'U1',
+            message: 'U1 コピー成功',
+            failed: false,
+            state: 'success',
+        });
+        assert.equal(status.textContent, '記録操作のエラー');
+        assert.equal(status.getAttribute('data-state'), 'failed');
+        app.mounted.update({ type: 'status', message: '記録中', busy: true });
+        app.mounted.update({
+            type: 'copy-status',
+            id: 'U2',
+            message: 'U2 コピー失敗',
+            failed: true,
+            state: 'error',
+        });
+        assert.equal(status.textContent, '記録中');
+        assert.equal(
+            app.host.querySelector('.board')?.getAttribute('aria-busy'),
+            'true',
+        );
+        assert.equal(
+            app.host.querySelector('.copy-feedback')?.textContent,
+            'U2 コピー失敗',
+        );
+    } finally {
+        app.close();
+    }
+});

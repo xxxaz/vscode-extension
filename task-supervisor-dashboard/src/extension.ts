@@ -10,6 +10,7 @@ import { createGateway } from './backend.ts';
 import type { Operation } from './boardClient.ts';
 import { BoardFeed } from './boardFeed.ts';
 import {
+    copyBoardCommand,
     findBoardLink,
     hasBoardOperation,
     isOutsideRelative,
@@ -403,15 +404,31 @@ export function activate(context: vscode.ExtensionContext): void {
         };
         subscriptions.push(
             webview.onDidReceiveMessage((value: unknown) => {
+                const message = parseBoardMessage(value);
+                if (!message) return;
                 void (async () => {
-                    const message = parseBoardMessage(value);
-                    if (!message) return;
                     if (message.type === 'ready') {
                         send(lastStatus);
                         entry.feed.replay(send);
                         entry.feed.request();
                     } else if (message.type === 'refresh') {
                         await entry.feed.refresh();
+                    } else if (message.type === 'copy-command') {
+                        assertCurrentFolder(folder);
+                        if (!entry.feed.current)
+                            throw new Error('一覧の読取りを待ってください');
+                        await copyBoardCommand(
+                            entry.feed.current,
+                            message,
+                            vscode.env.clipboard,
+                        );
+                        send({
+                            type: 'copy-status',
+                            id: message.id,
+                            message: `${message.id} のコマンドをコピーしました`,
+                            failed: false,
+                            state: 'success',
+                        });
                     } else if (message.type === 'operation') {
                         if (
                             !entry.feed.current ||
@@ -464,12 +481,18 @@ export function activate(context: vscode.ExtensionContext): void {
                                 );
                         }
                     }
-                })().catch((error) =>
-                    status(
-                        `一覧の操作を開始できませんでした: ${String(error)}`,
-                        true,
-                    ),
-                );
+                })().catch((error) => {
+                    const text = `一覧の操作を開始できませんでした: ${String(error)}`;
+                    if (message.type === 'copy-command')
+                        send({
+                            type: 'copy-status',
+                            id: message.id,
+                            message: text,
+                            failed: true,
+                            state: 'error',
+                        });
+                    else status(text, true);
+                });
             }),
         );
         webview.options = {

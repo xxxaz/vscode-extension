@@ -105,7 +105,7 @@ export async function record(
         if (!rows.length) {
             ui.info(
                 operation === 'ran'
-                    ? 'キック済みを記録できる未完了の実行依頼はありません'
+                    ? '正式な共通一覧でキック済みの対象となる依頼はありません'
                     : 'この操作の対象となる未完了の依頼はありません',
             );
             return;

@@ -184,6 +184,9 @@ export function mountBoard(
     filterLabel.append(filter);
     header.append(headingRow, metadata, supervisor, counts, filterLabel);
     const status = make('p', 'status');
+    const copyStatus = make('p', 'status copy-feedback');
+    copyStatus.hidden = true;
+    copyStatus.setAttribute('role', 'status');
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     status.hidden = true;
@@ -193,7 +196,7 @@ export function mountBoard(
     const content = make('div', 'sections');
     const empty = make('p', 'board-empty', '表示する項目はありません。');
     empty.hidden = true;
-    root.append(header, status, warnings, content, empty);
+    root.append(header, status, copyStatus, warnings, content, empty);
     host.append(root);
 
     const scrollElement = () => doc.scrollingElement ?? doc.documentElement;
@@ -251,9 +254,11 @@ export function mountBoard(
     };
     const syncOperationButtons = () => {
         for (const button of root.querySelectorAll<HTMLButtonElement>(
-            '.operation',
+            '.operation, .copy-command',
         )) {
-            button.disabled = busy || unavailable;
+            button.disabled =
+                unavailable ||
+                (busy && !button.classList.contains('copy-command'));
         }
     };
     const setBusy = (value: boolean) => {
@@ -413,6 +418,25 @@ export function mountBoard(
             ).map((button) => [button.dataset.operation, button]),
         );
         const buttons: HTMLButtonElement[] = [];
+        if (card.command) {
+            const command = card.command;
+            const button =
+                previousButtons.get('copy-command') ??
+                make('button', 'copy-command refresh');
+            button.type = 'button';
+            button.dataset.operation = 'copy-command';
+            button.textContent = 'コマンドをコピー';
+            button.disabled = unavailable;
+            clickActions.set(button, () => {
+                if (unavailable) return;
+                post({
+                    type: 'copy-command',
+                    id: command.id,
+                    revision: command.revision,
+                });
+            });
+            buttons.push(button);
+        }
         for (const operation of card.operations) {
             if (!operations.has(operation.operation)) continue;
             const button =
@@ -626,7 +650,11 @@ export function mountBoard(
         update(message) {
             if (disposed) return;
             if (message.type === 'snapshot') render(message.snapshot);
-            else {
+            else if (message.type === 'copy-status') {
+                copyStatus.hidden = false;
+                copyStatus.textContent = message.message;
+                copyStatus.dataset.state = message.state;
+            } else {
                 setBusy(message.busy ?? false);
                 if (!hasSnapshot) metadata.hidden = Boolean(message.failed);
                 status.hidden = !message.message;

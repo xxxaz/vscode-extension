@@ -755,6 +755,15 @@ export function projectBoard(input: {
             );
         if (v.needsOk)
             fields.push(field('完了条件', text('結果を確認して OK なら完了')));
+        else if (row.kind === 'execution' && !row.operations.execute && v.ranAt === undefined)
+            fields.push(
+                field(
+                    'キック済みの記録',
+                    text(
+                        '正式な共通一覧がキック記録を許可していません。前提と受付の対応を確認してください。',
+                    ),
+                ),
+            );
         if (v.after?.length)
             fields.push(field('前提', text(v.after.join('・'))));
         fields.push(field('表示内容の版', text(row.version)));
@@ -787,6 +796,15 @@ export function projectBoard(input: {
             fields,
             links: [],
             operations,
+            ...(v.command?.trim()
+                ? {
+                      command: {
+                          id: v.id,
+                          revision: revision(v),
+                          text: v.command,
+                      },
+                  }
+                : {}),
         };
     };
     const taskCard = (t: Task): BoardCard => {
